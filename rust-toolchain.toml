@@ -1,0 +1,6 @@
+# Pinned so a new stable release (and its new clippy lints) cannot break
+# CI without a change in this repo. CI and release jobs follow this file:
+# rustup picks it over the `stable` they install. Bump it on purpose.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]

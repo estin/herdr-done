@@ -1,7 +1,10 @@
+use crate::store;
 use bonfig::FromSource as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
 
 #[bonfig::settings]
 #[derive(Debug, Clone, PartialEq)]
@@ -9,6 +12,9 @@ use std::collections::BTreeMap;
 pub struct Settings {
     #[builder(default = "dark")]
     pub theme: String,
+    pub database: Option<String>,
+    #[builder(default = "1s")]
+    pub refresh_interval: String,
     pub base16: Option<String>,
     pub colors: Colors,
     pub keys: Keys,
@@ -60,6 +66,8 @@ struct Scheme {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
+    pub database: PathBuf,
+    pub refresh_interval: Duration,
     pub theme: Theme,
     pub bindings: Bindings,
 }
@@ -184,6 +192,17 @@ fn config_error(error: &bonfig::Error) -> String {
 }
 
 fn resolve(settings: &Settings) -> Result<Config, String> {
+    let database = if let Some(path) = settings.database.as_deref().filter(|path| !path.is_empty())
+    {
+        PathBuf::from(expand_path(path, "database")?)
+    } else {
+        store::default_database_path()?
+    };
+    let refresh_interval = humantime::parse_duration(&settings.refresh_interval)
+        .map_err(|error| format!("refresh_interval: {error}"))?;
+    if refresh_interval.is_zero() {
+        return Err("refresh_interval: must be greater than zero".to_owned());
+    }
     let mut theme = if settings.base16.is_some() {
         Theme::dark()
     } else {
@@ -234,13 +253,15 @@ fn resolve(settings: &Settings) -> Result<Config, String> {
         "colors.running",
     )?;
     Ok(Config {
+        database,
+        refresh_interval,
         theme,
         bindings: parse_bindings(&settings.keys)?,
     })
 }
 
 fn apply_scheme(mut theme: Theme, path: &str) -> Result<Theme, String> {
-    let path = expand_path(path)?;
+    let path = expand_path(path, "base16")?;
     let contents = std::fs::read_to_string(&path)
         .map_err(|error| format!("base16: cannot read {path:?}: {error}"))?;
     let scheme = Scheme::from_yaml(&contents)
@@ -264,12 +285,12 @@ fn scheme_color(scheme: &Scheme, key: &str) -> Result<Color, String> {
     parse_color(value, &format!("base16: palette.{key}"))
 }
 
-fn expand_path(path: &str) -> Result<String, String> {
+fn expand_path(path: &str, key: &str) -> Result<String, String> {
     let Some(rest) = path.strip_prefix("~/") else {
         return Ok(path.to_owned());
     };
     let home = std::env::var_os("HOME")
-        .ok_or_else(|| format!("base16: cannot expand {path:?}, HOME is unset"))?;
+        .ok_or_else(|| format!("{key}: cannot expand {path:?}, HOME is unset"))?;
     let home = home.to_string_lossy();
     Ok(format!("{}/{}", home.trim_end_matches('/'), rest))
 }
@@ -450,7 +471,8 @@ mod tests {
     use figment::Jail;
     use serde_json::json;
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
     use tempfile::tempdir;
 
     fn char_key(ch: char) -> KeyEvent {
@@ -511,6 +533,74 @@ palette:
         match resolve(&settings) {
             Ok(_) => "expected a configuration error".to_owned(),
             Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn defaults_keep_xdg_database_and_interval() {
+        Jail::expect_with(|jail| {
+            jail.set_env("XDG_CONFIG_HOME", ".");
+            jail.set_env("XDG_DATA_HOME", "data");
+            let config = load().map_err(figment::Error::from)?;
+            assert_eq!(config.database, PathBuf::from("data/herdr-done/events.db"));
+            assert_eq!(config.refresh_interval, Duration::from_secs(1));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn config_database_wins_over_xdg_default() {
+        Jail::expect_with(|jail| {
+            jail.set_env("XDG_CONFIG_HOME", ".");
+            jail.set_env("XDG_DATA_HOME", "data");
+            write_config(jail, "database = \"configured.db\"\n")?;
+            let config = load().map_err(figment::Error::from)?;
+            assert_eq!(config.database, PathBuf::from("configured.db"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn database_env_wins_over_config() {
+        Jail::expect_with(|jail| {
+            jail.set_env("XDG_CONFIG_HOME", ".");
+            jail.set_env("XDG_DATA_HOME", "data");
+            jail.set_env("HD__DATABASE", "env.db");
+            write_config(jail, "database = \"configured.db\"\n")?;
+            let config = load().map_err(figment::Error::from)?;
+            assert_eq!(config.database, PathBuf::from("env.db"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn human_refresh_interval_is_parsed() -> Result<(), String> {
+        let settings =
+            Settings::from_toml("database = \"events.db\"\nrefresh_interval = \"2s 500ms\"\n")
+                .map_err(|error| config_error(&error))?;
+        let config = resolve(&settings)?;
+        assert_eq!(config.refresh_interval, Duration::from_millis(2500));
+        Ok(())
+    }
+
+    #[test]
+    fn database_tilde_error_names_the_database_key() {
+        Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.set_env("XDG_CONFIG_HOME", ".");
+            jail.set_env("XDG_DATA_HOME", "data");
+            write_config(jail, "database = \"~/events.db\"\n")?;
+            let error = load().err().unwrap_or_default();
+            assert!(error.contains("database:"), "{error}");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn invalid_refresh_interval_errors_name_the_key() {
+        for value in ["0s", "garbage"] {
+            let error = resolve_error(&format!("refresh_interval = \"{value}\""));
+            assert!(error.contains("refresh_interval"), "{error}");
         }
     }
 

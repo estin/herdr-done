@@ -7,6 +7,8 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use notify::event::Event as WatcherEvent;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
@@ -16,9 +18,10 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use std::io::{self, Stdout};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const QUIT_INTERVAL: Duration = Duration::from_secs(2);
 const QUIT_NOTICE: &str = "To quit, press Ctrl-C twice";
 
@@ -26,6 +29,42 @@ const QUIT_NOTICE: &str = "To quit, press Ctrl-C twice";
 pub enum Mode {
     Live,
     Oneshot,
+}
+
+struct WalWatcher {
+    _watcher: RecommendedWatcher,
+    receiver: Receiver<notify::Result<WatcherEvent>>,
+    wal_path: PathBuf,
+}
+
+impl WalWatcher {
+    fn start(mode: Mode, wal_path: &Path) -> Option<Self> {
+        if mode == Mode::Oneshot {
+            return None;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let mut watcher =
+            notify::recommended_watcher(move |result: notify::Result<WatcherEvent>| {
+                let _ = sender.send(result);
+            })
+            .ok()?;
+        let directory = wal_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        watcher.watch(directory, RecursiveMode::NonRecursive).ok()?;
+        Some(Self {
+            _watcher: watcher,
+            receiver,
+            wal_path: wal_path.to_path_buf(),
+        })
+    }
+
+    fn pending(&self) -> bool {
+        self.receiver.try_iter().any(|result| {
+            result.is_ok_and(|event| event.paths.iter().any(|path| path == &self.wal_path))
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,7 +254,14 @@ pub fn run(
     if start_unread {
         app.select_first_unread();
     }
-    let outcome = run_terminal(&mut app, store, mode, &config.theme)?;
+    let wal_watcher = WalWatcher::start(mode, &store.wal_path());
+    if mode == Mode::Live && wal_watcher.is_none() {
+        app.set_message(format!(
+            "watch unavailable; refreshing every {}",
+            humantime::format_duration(config.refresh_interval)
+        ));
+    }
+    let outcome = run_terminal(&mut app, store, mode, config, wal_watcher.as_ref())?;
     Ok(outcome)
 }
 
@@ -223,7 +269,8 @@ fn run_terminal(
     app: &mut App,
     store: &Store,
     mode: Mode,
-    theme: &Theme,
+    config: &Config,
+    wal_watcher: Option<&WalWatcher>,
 ) -> Result<Option<String>, String> {
     enable_raw_mode().map_err(|error| format!("terminal error: {error}"))?;
     let mut stdout = io::stdout();
@@ -235,7 +282,7 @@ fn run_terminal(
     let mut terminal =
         Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
 
-    let result = event_loop(&mut terminal, app, store, mode, theme);
+    let result = event_loop(&mut terminal, app, store, mode, config, wal_watcher);
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let _ = terminal.show_cursor();
@@ -247,21 +294,19 @@ fn event_loop(
     app: &mut App,
     store: &Store,
     mode: Mode,
-    theme: &Theme,
+    config: &Config,
+    wal_watcher: Option<&WalWatcher>,
 ) -> Result<Option<String>, String> {
     let mut last_refresh = Instant::now();
     loop {
         terminal
-            .draw(|frame| render(frame, app, theme))
+            .draw(|frame| render(frame, app, &config.theme))
             .map_err(|error| format!("terminal error: {error}"))?;
         if event::poll(Duration::from_millis(200))
             .map_err(|error| format!("input error: {error}"))?
-        {
-            let TerminalEvent::Key(key) =
+            && let TerminalEvent::Key(key) =
                 event::read().map_err(|error| format!("input error: {error}"))?
-            else {
-                continue;
-            };
+        {
             let action = app.handle_key(key);
             match apply_action(app, store, action, mode, &herdr::focus_event) {
                 Outcome::Continue => {}
@@ -269,11 +314,22 @@ fn event_loop(
                 Outcome::Jump(id) => return Ok(Some(id)),
             }
         }
-        if last_refresh.elapsed() >= REFRESH_INTERVAL {
+        let now = Instant::now();
+        let wal_change = wal_watcher.is_some_and(WalWatcher::pending);
+        if should_refresh(wal_change, last_refresh, now, config.refresh_interval) {
             app.refresh(store.list(100, false)?);
-            last_refresh = Instant::now();
+            last_refresh = now;
         }
     }
+}
+
+fn should_refresh(
+    wal_change: bool,
+    last_refresh: Instant,
+    now: Instant,
+    interval: Duration,
+) -> bool {
+    wal_change || now.duration_since(last_refresh) >= interval
 }
 
 fn apply_action(
@@ -461,18 +517,30 @@ fn result_style(theme: &Theme, event: &Event) -> Style {
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, App, Mode, Outcome, QUIT_INTERVAL, QUIT_NOTICE, View, apply_action, render,
+        Action, App, Mode, Outcome, QUIT_INTERVAL, QUIT_NOTICE, View, WalWatcher, apply_action,
+        render, should_refresh,
     };
     use crate::config::{Bindings, Theme};
     use crate::event::{Event, HerdrContext, now_millis};
     use crate::store::Store;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use notify::event::{Event as WatcherEvent, EventAttributes, EventKind, ModifyKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::{self, Receiver};
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
+
+    fn watcher_event(path: PathBuf) -> WatcherEvent {
+        WatcherEvent {
+            kind: EventKind::Modify(ModifyKind::Any),
+            paths: vec![path],
+            attrs: EventAttributes::new(),
+        }
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -506,6 +574,59 @@ mod tests {
             .into_iter()
             .map(named_event)
             .collect()
+    }
+
+    fn watcher_with(
+        receiver: Receiver<notify::Result<WatcherEvent>>,
+    ) -> Result<WalWatcher, String> {
+        Ok(WalWatcher {
+            _watcher: notify::recommended_watcher(|_| {}).map_err(|error| error.to_string())?,
+            receiver,
+            wal_path: PathBuf::from("events.db-wal"),
+        })
+    }
+
+    #[test]
+    fn wal_path_event_marks_a_pending_change() -> Result<(), String> {
+        let (sender, receiver) = mpsc::channel::<notify::Result<WatcherEvent>>();
+        sender
+            .send(Ok(watcher_event(PathBuf::from("events.db-wal"))))
+            .map_err(|error| error.to_string())?;
+        assert!(watcher_with(receiver)?.pending());
+        Ok(())
+    }
+
+    #[test]
+    fn non_wal_path_does_not_mark_a_pending_change() -> Result<(), String> {
+        let (sender, receiver) = mpsc::channel::<notify::Result<WatcherEvent>>();
+        sender
+            .send(Ok(watcher_event(PathBuf::from("events.db"))))
+            .map_err(|error| error.to_string())?;
+        assert!(!watcher_with(receiver)?.pending());
+        Ok(())
+    }
+
+    #[test]
+    fn wal_change_beats_the_interval() {
+        let now = Instant::now();
+        let recent = now.checked_sub(Duration::from_millis(10)).unwrap_or(now);
+        assert!(should_refresh(true, recent, now, Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn interval_fallback_still_refreshes() {
+        let now = Instant::now();
+        let old = now
+            .checked_sub(Duration::from_secs(10) + Duration::from_millis(1))
+            .unwrap_or(now);
+        assert!(should_refresh(false, old, now, Duration::from_secs(10)));
+        let recent = now.checked_sub(Duration::from_millis(10)).unwrap_or(now);
+        assert!(!should_refresh(false, recent, now, Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn oneshot_mode_creates_no_watcher() {
+        assert!(WalWatcher::start(Mode::Oneshot, Path::new("events.db-wal")).is_none());
     }
 
     #[test]

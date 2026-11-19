@@ -3,6 +3,7 @@ mod support;
 use herdr_done::event::EventStatus;
 use herdr_done::store::Store;
 use std::fs;
+use std::process::Command;
 use support::{hd, text};
 use tempfile::tempdir;
 
@@ -35,6 +36,32 @@ fn creates_completed_event_from_message() -> Result<(), Box<dyn std::error::Erro
     assert_ne!(event.cwd, "");
     assert_eq!(event.herdr.session_id.as_deref(), Some("job"));
     assert_eq!(event.herdr.pane_id.as_deref(), Some("w9:p3"));
+    Ok(())
+}
+
+#[test]
+fn configured_database_is_shared_by_commands() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("configured.db");
+    let config_home = directory.path().join("config");
+    let config_dir = config_home.join("herdr-done");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(
+        config_dir.join("config.toml"),
+        format!("database = \"{}\"\n", database.display()),
+    )?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hd"))
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env_remove("HD__DATABASE")
+        .args(["event", "configured"])
+        .output()?;
+    assert!(output.status.success(), "{}", text(&output.stderr));
+
+    let store = Store::open(&database)?;
+    let events = store.list(10, false)?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].program, "configured");
     Ok(())
 }
 

@@ -23,7 +23,7 @@ hd run --sound --notify -- cargo build --release
 
 `hd run --` passes the executable and arguments directly. The command does not use a shell. Standard input, output, and error streams stay attached to your terminal. `hd` returns the command exit code.
 
-The tool stores a completion event in SQLite. The default database path is `$XDG_DATA_HOME/herdr-done/events.db`, or `$HOME/.local/share/herdr-done/events.db` when `XDG_DATA_HOME` is not set. Set `HD_DATABASE` to use another path.
+The tool stores a completion event in SQLite. The default database path is `$XDG_DATA_HOME/herdr-done/events.db`, or `$HOME/.local/share/herdr-done/events.db` when `XDG_DATA_HOME` is not set. Set the `database` configuration key or `HD__DATABASE` to use another path. The environment variable wins when both are set. The old `HD_DATABASE` variable no longer works; use `HD__DATABASE`.
 
 `hd` does not store command output or environment values. It stores command arguments, working directory, start time, finish time, duration, result, read state, and available Herdr identifiers.
 
@@ -59,7 +59,7 @@ hd inbox
 hd inbox --oneshot
 ```
 
-The inbox opens without marking events as read. It refreshes the event list every second while it stays open. A pane jump keeps the inbox open and shows focus errors there. Press Ctrl-C twice within two seconds to exit. In event details, `q` and `Esc` return to the list. In the list, they keep the inbox open and show "To quit, press Ctrl-C twice". Use `hd inbox --oneshot` to close the inbox after a pane jump.
+The inbox opens without marking events as read. A live inbox watches the event store and refreshes when a new event is written. It also refreshes at the configured interval as a fallback. A pane jump keeps the inbox open and shows focus errors there. Press Ctrl-C twice within two seconds to exit. In event details, `q` and `Esc` return to the list. In the list, they keep the inbox open and show "To quit, press Ctrl-C twice". Use `hd inbox --oneshot` to close the inbox after a pane jump.
 
 | Key | Action |
 | --- | --- |
@@ -84,6 +84,8 @@ Configuration loads in three layers. Built-in defaults load first. The file load
 
 ```toml
 theme = "light"
+database = "~/events.db"
+refresh_interval = "1s"
 
 [colors]
 title = "#005faf"
@@ -106,6 +108,14 @@ clear_read = ["c"]
 ```
 
 The `theme` key accepts `dark` and `light`. `dark` is the default. Each `[colors]` key overrides one color from the selected theme. A color can be a name such as `gray` or `light-blue`, or a hex value such as `#RRGGBB`.
+
+The `database` key sets the SQLite event store for every `hd` command. A leading `~/` expands to `$HOME`. A relative path resolves from the current working directory. If `database` is unset, `hd` uses the XDG data path above. `HD__DATABASE` overrides `database` when both are set.
+
+The `refresh_interval` key sets the live inbox fallback refresh cadence. It uses human time syntax, so values such as `"500ms"`, `"1s"`, and `"2s 500ms"` work. The default is `"1s"`. The value must be greater than zero.
+
+A live inbox watches the store's write-ahead log and refreshes when another process writes an event. This happens without waiting for the next interval tick. If the watcher cannot start, the inbox still refreshes at `refresh_interval`. One-shot mode does not start a watcher.
+
+An invalid configuration value stops any `hd` command before it runs and names the key that failed. A missing configuration file is not an error.
 
 Set `base16` to use a local tinted-theming scheme file instead of a built-in theme. Download a spec-0.11 file from the `base16` directory in the tinted-theming/schemes repository at `https://github.com/tinted-theming/schemes`. `hd` does not download scheme files.
 

@@ -573,7 +573,7 @@ A few details:
 I'd also support environment overrides:
 
 ```
-HD_DATABASE=/tmp/hd.db
+HD__DATABASE=/tmp/hd.db
 HD_DISABLE_RECORDING=1
 ```
 

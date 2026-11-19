@@ -102,7 +102,7 @@ The system MUST let users list recent events and inspect an event by identifier.
 - **THEN** the inbox does not present the ID as a human-readable name and shows the location as unavailable
 
 ### Requirement: Load layered inbox configuration
-The system MUST load inbox configuration in layers: built-in defaults, then an optional user configuration file, then environment variables with the `HD__` prefix and `__` between nested keys. Higher layers MUST override lower layers key by key. A missing configuration file MUST NOT be an error. Invalid configuration MUST produce an error that names the offending key and MUST prevent the inbox from opening.
+The system MUST load configuration in layers: built-in defaults, then an optional user configuration file, then environment variables with the `HD__` prefix and `__` between nested keys. Higher layers MUST override lower layers key by key. A missing configuration file MUST NOT be an error. Invalid configuration MUST produce an error that names the offending key and MUST prevent the command from continuing. The configuration MUST include a `database` key for the event store path and a `refresh_interval` key in human time syntax.
 
 #### Scenario: Configuration file location
 - **WHEN** the system looks for the user configuration file
@@ -127,6 +127,26 @@ The system MUST load inbox configuration in layers: built-in defaults, then an o
 #### Scenario: Invalid configuration value
 - **WHEN** the configuration contains an unknown key, an unknown theme name, an invalid color, or an unparsable key binding
 - **THEN** the system reports an error that names the offending key and does not open the inbox
+
+#### Scenario: Database path from configuration
+- **WHEN** the configuration sets `database` to a path
+- **THEN** every `hd` command uses that path for the event store instead of the default location
+
+#### Scenario: HD__DATABASE wins over the configuration file
+- **WHEN** both `HD__DATABASE` and the `database` configuration key are set
+- **THEN** the event store uses the `HD__DATABASE` path
+
+#### Scenario: Default database path
+- **WHEN** neither `HD__DATABASE` nor `database` is set
+- **THEN** the event store stays at `$XDG_DATA_HOME/herdr-done/events.db`, or `$HOME/.local/share/herdr-done/events.db` when `XDG_DATA_HOME` is unset
+
+#### Scenario: Refresh interval in human time
+- **WHEN** the configuration sets `refresh_interval = "2s 500ms"`
+- **THEN** the live inbox uses 2.5 seconds as its fallback refresh interval
+
+#### Scenario: Invalid refresh interval
+- **WHEN** `refresh_interval` is unparsable or zero
+- **THEN** the system reports an error that names the `refresh_interval` key and does not open the inbox
 
 ### Requirement: Configure inbox theme colors
 The system MUST ship built-in `dark` (default) and `light` themes and MUST allow individual color overrides on top of the selected theme. When a base16 scheme is configured, its mapped palette MUST replace the built-in theme colors before individual overrides apply. Color values MUST accept named colors and `#RRGGBB` hex strings. The configurable colors MUST cover the inbox title, unread marker, secondary text, success, failure, and running result labels, the inbox background, and the default text color. Built-in themes MUST leave background and default text unset so the terminal colors show through. The selection highlight MUST stay readable on any terminal background.
@@ -178,7 +198,7 @@ Each inbox action (down, up, inspect, back, next unread, mark read, mark unread,
 - **THEN** double `Ctrl-C` still quits and no configuration key can disable it
 
 ### Requirement: Review events in an interactive inbox
-The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, navigation to the next unread event, and clearing read events. By default, the inbox MUST refresh its recent events while it remains open and MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump. The inbox MUST apply the configured theme colors and MUST dispatch keys through the configured keybindings. The footer help MUST reflect the active keybindings. The inbox MUST exit only after two `Ctrl-C` key presses within two seconds. Pressing a back key (`q` or `Esc` by default) in the list view MUST keep the inbox open and show the quit notice. Pressing a back key in the detail view MUST return to the list view.
+The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, navigation to the next unread event, and clearing read events. By default, the inbox MUST refresh its recent events while it remains open, MUST wake up and refresh when the event store's write-ahead log changes, and MUST use the configured refresh interval as a fallback cadence. It MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump. The inbox MUST apply the configured theme colors and MUST dispatch keys through the configured keybindings. The footer help MUST reflect the active keybindings. The inbox MUST exit only after two `Ctrl-C` key presses within two seconds. Pressing a back key (`q` or `Esc` by default) in the list view MUST keep the inbox open and show the quit notice. Pressing a back key in the detail view MUST return to the list view.
 
 #### Scenario: Open inbox with unread events
 - **WHEN** a user opens the inbox with unread events
@@ -240,6 +260,20 @@ The system MUST provide a keyboard-driven inbox that supports event selection, e
 #### Scenario: Jump fails in the live inbox
 - **WHEN** a pane jump from the live inbox cannot complete
 - **THEN** the inbox stays open and displays the navigation error
+
+#### Scenario: WAL change wakes the inbox
+- **GIVEN** a live inbox is open and idle between interval ticks
+- **WHEN** another process stores a new event and the write-ahead log file changes
+- **THEN** the inbox refreshes promptly without waiting for the next interval tick
+
+#### Scenario: Interval fallback without WAL notifications
+- **GIVEN** the write-ahead log produces no usable change notifications
+- **WHEN** the configured refresh interval elapses
+- **THEN** the inbox still refreshes its event list
+
+#### Scenario: One-shot mode does not watch
+- **WHEN** a user runs `hd inbox --oneshot`
+- **THEN** the inbox behaves as before and closes after a pane jump
 
 ### Requirement: Navigate to the next unread completion
 The system MUST provide `hd next` to open the interactive inbox with the next unread completion selected.

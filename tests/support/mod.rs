@@ -3,7 +3,7 @@ use std::process::Command;
 
 pub fn hd(database: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hd"));
-    command.env("HD_DATABASE", database);
+    command.env("HD__DATABASE", database);
     for key in [
         "HERDR_ENV",
         "HERDR_BIN_PATH",

@@ -54,6 +54,7 @@ ALTER TABLE events ADD COLUMN pane_name TEXT;
 
 pub struct Store {
     connection: Connection,
+    database: PathBuf,
 }
 
 impl Store {
@@ -83,13 +84,23 @@ impl Store {
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(storage_error)?;
         restrict_file(path)?;
-        let mut store = Self { connection };
+        let mut store = Self {
+            connection,
+            // Watchers report absolute paths; keep ours absolute too.
+            database: fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+        };
         store.migrate()?;
         Ok(store)
     }
 
-    pub fn open_default() -> Result<Self, String> {
-        Self::open(default_database_path()?)
+    pub fn path(&self) -> &Path {
+        &self.database
+    }
+
+    pub fn wal_path(&self) -> PathBuf {
+        let mut value = self.database.as_os_str().to_os_string();
+        value.push("-wal");
+        PathBuf::from(value)
     }
 
     pub fn upsert(&self, event: &Event) -> Result<(), String> {
@@ -235,11 +246,6 @@ impl Store {
 }
 
 pub fn default_database_path() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("HD_DATABASE")
-        && !path.is_empty()
-    {
-        return Ok(PathBuf::from(path));
-    }
     let base = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
@@ -338,6 +344,16 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn exposes_database_and_wal_paths() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let path = directory.path().join("events.db");
+        let store = Store::open(&path)?;
+        assert_eq!(store.path(), path);
+        assert_eq!(store.wal_path(), directory.path().join("events.db-wal"));
+        Ok(())
+    }
 
     #[test]
     fn creates_schema_and_saves_updates() -> Result<(), String> {

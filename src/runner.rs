@@ -3,6 +3,7 @@ use crate::event::Event;
 use crate::herdr;
 use crate::store::Store;
 use std::ffi::OsString;
+use std::path::Path;
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -21,9 +22,15 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 #[cfg(unix)]
 use signal_hook::flag::register_usize;
 
-pub fn run(program: &OsString, args: &[OsString], sound: bool, notify: bool) -> ExitCode {
+pub fn run(
+    program: &OsString,
+    args: &[OsString],
+    sound: bool,
+    notify: bool,
+    database: &Path,
+) -> ExitCode {
     let mut event = Event::new(program, args, herdr::current_context());
-    let store = match Store::open_default() {
+    let store = match Store::open(database) {
         Ok(store) => Some(store),
         Err(error) => {
             eprintln!("hd: {error}");

@@ -8,13 +8,18 @@ use herdr_done::inbox;
 use herdr_done::runner;
 use herdr_done::store::Store;
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    dispatch(Cli::parse().command())
+    let config = match config::load() {
+        Ok(config) => config,
+        Err(error) => return fail(&error),
+    };
+    dispatch(Cli::parse().command(), &config)
 }
 
-fn dispatch(command: Commands) -> ExitCode {
+fn dispatch(command: Commands, config: &config::Config) -> ExitCode {
     match command {
         Commands::Run {
             sound,
@@ -27,24 +32,24 @@ fn dispatch(command: Commands) -> ExitCode {
                 return ExitCode::FAILURE;
             };
             let args: Vec<OsString> = parts.collect();
-            runner::run(&program, &args, sound, notify)
+            runner::run(&program, &args, sound, notify, &config.database)
         }
         Commands::Event {
             sound,
             notify,
             message,
-        } => create_event(&message, sound, notify),
-        Commands::List { unread, limit } => list(unread, limit),
-        Commands::Show { id } => show(&id),
-        Commands::Inbox { oneshot } => open_inbox(oneshot, false),
-        Commands::Next => next(),
-        Commands::Clear => clear(),
-        Commands::Jump { id } => jump(&id),
+        } => create_event(&message, sound, notify, &config.database),
+        Commands::List { unread, limit } => list(unread, limit, &config.database),
+        Commands::Show { id } => show(&id, &config.database),
+        Commands::Inbox { oneshot } => open_inbox(oneshot, false, config),
+        Commands::Next => next(config),
+        Commands::Clear => clear(&config.database),
+        Commands::Jump { id } => jump(&id, &config.database),
     }
 }
 
-fn create_event(message: &str, sound: bool, notify: bool) -> ExitCode {
-    let store = match Store::open_default() {
+fn create_event(message: &str, sound: bool, notify: bool, database: &Path) -> ExitCode {
+    let store = match Store::open(database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
@@ -57,8 +62,8 @@ fn create_event(message: &str, sound: bool, notify: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn list(unread: bool, limit: usize) -> ExitCode {
-    let store = match Store::open_default() {
+fn list(unread: bool, limit: usize, database: &Path) -> ExitCode {
+    let store = match Store::open(database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
@@ -87,8 +92,8 @@ fn list(unread: bool, limit: usize) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn show(id: &str) -> ExitCode {
-    let store = match Store::open_default() {
+fn show(id: &str, database: &Path) -> ExitCode {
+    let store = match Store::open(database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
@@ -117,12 +122,8 @@ fn show(id: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn open_inbox(oneshot: bool, start_unread: bool) -> ExitCode {
-    let config = match config::load() {
-        Ok(config) => config,
-        Err(error) => return fail(&error),
-    };
-    let store = match Store::open_default() {
+fn open_inbox(oneshot: bool, start_unread: bool, config: &config::Config) -> ExitCode {
+    let store = match Store::open(&config.database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
@@ -131,15 +132,15 @@ fn open_inbox(oneshot: bool, start_unread: bool) -> ExitCode {
     } else {
         inbox::Mode::Live
     };
-    match inbox::run(&store, mode, start_unread, &config) {
-        Ok(Some(id)) => jump(&id),
+    match inbox::run(&store, mode, start_unread, config) {
+        Ok(Some(id)) => jump(&id, &config.database),
         Ok(None) => ExitCode::SUCCESS,
         Err(error) => fail(&error),
     }
 }
 
-fn next() -> ExitCode {
-    let store = match Store::open_default() {
+fn next(config: &config::Config) -> ExitCode {
+    let store = match Store::open(&config.database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
@@ -151,11 +152,11 @@ fn next() -> ExitCode {
         return fail("no unread events");
     }
     drop(store);
-    open_inbox(false, true)
+    open_inbox(false, true, config)
 }
 
-fn clear() -> ExitCode {
-    let store = match Store::open_default() {
+fn clear(database: &Path) -> ExitCode {
+    let store = match Store::open(database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
@@ -172,8 +173,8 @@ fn clear() -> ExitCode {
     }
 }
 
-fn jump(id: &str) -> ExitCode {
-    let store = match Store::open_default() {
+fn jump(id: &str, database: &Path) -> ExitCode {
+    let store = match Store::open(database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };

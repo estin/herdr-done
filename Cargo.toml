@@ -14,6 +14,7 @@ clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29.0"
 humantime = "2.4"
 notify-rust = "4.19.0"
+notify = { version = "8.2", default-features = false }
 ratatui = "0.30.2"
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -35,6 +36,9 @@ missing_panics_doc = { level = "allow", priority = 1 }
 [target."cfg(unix)".dependencies]
 nix = { version = "0.32.0", features = ["signal", "process"] }
 signal-hook = "0.4.6"
+
+[target."cfg(target_os = \"macos\")".dependencies]
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

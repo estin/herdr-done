@@ -142,6 +142,85 @@ fn storage_failure_preserves_child_exit_code() -> Result<(), Box<dyn std::error:
 
 #[cfg(unix)]
 #[test]
+fn sound_uses_herdr_after_completion_and_preserves_exit_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("events.db");
+    let log = directory.path().join("events.log");
+    let fake_herdr = directory.path().join("fake-herdr");
+    let child_script = directory.path().join("child.sh");
+    fs::write(
+        &fake_herdr,
+        "#!/bin/sh\nif [ \"$1\" = \"notification\" ]; then printf '%s\\n' \"$@\" >> \"$ALERT_LOG\"; fi\n",
+    )?;
+    set_executable(&fake_herdr)?;
+    fs::write(
+        &child_script,
+        format!(
+            "#!/bin/sh\nprintf 'child\\n' >> \"{}\"\nexit 7\n",
+            log.display()
+        ),
+    )?;
+    set_executable(&child_script)?;
+
+    let output = hd(&database)
+        .env("HERDR_ENV", "1")
+        .env("HERDR_BIN_PATH", &fake_herdr)
+        .env("ALERT_LOG", &log)
+        .args(["run", "--sound", "--"])
+        .arg(&child_script)
+        .output()?;
+    assert_eq!(output.status.code(), Some(7));
+
+    let log_text = fs::read_to_string(&log)?;
+    let lines: Vec<&str> = log_text.lines().collect();
+    assert_eq!(lines.first(), Some(&"child"));
+    assert!(
+        lines
+            .windows(2)
+            .any(|pair| pair == ["notification", "show"])
+    );
+    assert!(lines.contains(&"--sound"));
+    assert!(lines.contains(&"done"));
+    assert!(log_text.contains("exit 7"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn no_alerts_are_requested_by_default() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let log = directory.path().join("events.log");
+    let fake_herdr = directory.path().join("fake-herdr");
+    fs::write(
+        &fake_herdr,
+        "#!/bin/sh\nif [ \"$1\" = \"notification\" ]; then printf called >> \"$ALERT_LOG\"; fi\n",
+    )?;
+    set_executable(&fake_herdr)?;
+
+    let output = hd(directory.path().join("events.db").as_path())
+        .env("HERDR_ENV", "1")
+        .env("HERDR_BIN_PATH", &fake_herdr)
+        .env("ALERT_LOG", &log)
+        .args(["run", "--", "true"])
+        .output()?;
+    assert!(output.status.success());
+    assert!(!log.exists());
+    Ok(())
+}
+
+#[test]
+fn notification_request_preserves_exit_code() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let output = hd(directory.path().join("events.db").as_path())
+        .args(["run", "--notify", "--", "sh", "-c", "exit 23"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(23));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn terminates_child_and_records_interrupted_event() -> Result<(), Box<dyn std::error::Error>> {
     use nix::sys::signal::Signal;
 

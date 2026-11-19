@@ -13,14 +13,18 @@ fn main() -> ExitCode {
 
 fn dispatch(command: Commands) -> ExitCode {
     match command {
-        Commands::Run { command } => {
+        Commands::Run {
+            sound,
+            notify,
+            command,
+        } => {
             let mut parts = command.into_iter();
             let Some(program) = parts.next() else {
                 eprintln!("hd: missing command");
                 return ExitCode::FAILURE;
             };
             let args: Vec<OsString> = parts.collect();
-            runner::run(&program, &args)
+            runner::run(&program, &args, sound, notify)
         }
         Commands::List { unread, limit } => list(unread, limit),
         Commands::Show { id } => show(&id),

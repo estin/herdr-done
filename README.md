@@ -14,9 +14,12 @@ The executable is `target/release/hd`.
 
 ```sh
 hd run -- cargo test --workspace
-hd run -- just deploy
-hd run -- nix flake check
+hd run --sound -- just deploy
+hd run --notify -- nix flake check
+hd run --sound --notify -- cargo build --release
 ```
+
+`--sound` plays Herdr's configured `done` sound after the command finishes. It needs Herdr to be available. `--notify` sends a system notification with the command and its result. Both flags are off by default and can be used together or separately. Alert errors are reported to stderr. They do not change the command exit code. Launch failures do not trigger alerts.
 
 `hd run --` passes the executable and arguments directly. The command does not use a shell. Standard input, output, and error streams stay attached to your terminal. `hd` returns the command exit code.
 
@@ -69,7 +72,7 @@ hd jump ID
 ## CLI reference
 
 ```text
-Usage: hd run <COMMAND>...
+Usage: hd run [OPTIONS] <COMMAND>...
 Usage: hd list [OPTIONS]
 Usage: hd show <ID>
 Usage: hd inbox [OPTIONS]

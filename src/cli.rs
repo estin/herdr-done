@@ -16,6 +16,14 @@ pub struct Cli {
 pub enum Commands {
     /// Run a command directly and record its completion
     Run {
+        /// Play Herdr's configured completion sound after the command finishes
+        #[arg(long)]
+        sound: bool,
+
+        /// Send a system notification after the command finishes
+        #[arg(long)]
+        notify: bool,
+
         /// Executable and arguments, after --
         #[arg(
             value_name = "COMMAND",
@@ -83,7 +91,7 @@ mod tests {
         ])
         .map_err(|error| error.to_string())?;
         match cli.command() {
-            Commands::Run { command } => {
+            Commands::Run { command, .. } => {
                 let expected: Vec<OsString> = ["cargo", "test", "--workspace", "--all-features"]
                     .into_iter()
                     .map(OsString::from)
@@ -91,6 +99,48 @@ mod tests {
                 assert_eq!(command, expected);
             }
             _ => return Err("expected the run command".to_owned()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn run_has_no_alerts_by_default() -> Result<(), String> {
+        let cli =
+            Cli::try_parse_from(["hd", "run", "--", "true"]).map_err(|error| error.to_string())?;
+        match cli.command() {
+            Commands::Run {
+                sound,
+                notify,
+                command: _,
+            } => {
+                assert!(!sound);
+                assert!(!notify);
+            }
+            _ => return Err("expected the run command".to_owned()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn run_parses_sound_and_notify_independently() -> Result<(), String> {
+        let cases: [&[&str]; 3] = [
+            &["hd", "run", "--sound", "--", "true"],
+            &["hd", "run", "--notify", "--", "true"],
+            &["hd", "run", "--sound", "--notify", "--", "true"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args).map_err(|error| error.to_string())?;
+            match cli.command() {
+                Commands::Run {
+                    sound,
+                    notify,
+                    command: _,
+                } => {
+                    assert_eq!(sound, args.contains(&"--sound"));
+                    assert_eq!(notify, args.contains(&"--notify"));
+                }
+                _ => return Err("expected the run command".to_owned()),
+            }
         }
         Ok(())
     }

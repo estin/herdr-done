@@ -20,5 +20,14 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| format!("no usage line for {command}"))?;
         assert!(readme.contains(usage), "README does not contain {usage}");
     }
+    let output = hd(directory.path().join("events.db").as_path())
+        .args(["run", "--help"])
+        .output()?;
+    assert!(output.status.success());
+    let help = text(&output.stdout);
+    for flag in ["--sound", "--notify"] {
+        assert!(help.contains(flag), "help does not contain {flag}");
+        assert!(readme.contains(flag), "README does not contain {flag}");
+    }
     Ok(())
 }

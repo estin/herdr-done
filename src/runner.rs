@@ -1,3 +1,4 @@
+use crate::alerts;
 use crate::event::Event;
 use crate::herdr;
 use crate::store::Store;
@@ -20,7 +21,7 @@ use signal_hook::consts::{SIGINT, SIGTERM};
 #[cfg(unix)]
 use signal_hook::flag::register_usize;
 
-pub fn run(program: &OsString, args: &[OsString]) -> ExitCode {
+pub fn run(program: &OsString, args: &[OsString], sound: bool, notify: bool) -> ExitCode {
     let mut event = Event::new(program, args, herdr::current_context());
     let store = match Store::open_default() {
         Ok(store) => Some(store),
@@ -77,6 +78,7 @@ pub fn run(program: &OsString, args: &[OsString]) -> ExitCode {
         event.completed(code_value, signal)
     };
     persist(store.as_ref(), &finished);
+    alerts::deliver(sound, notify, &finished);
     ExitCode::from(code)
 }
 

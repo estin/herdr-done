@@ -45,7 +45,11 @@ pub enum Commands {
     },
 
     /// Open the interactive inbox
-    Inbox,
+    Inbox {
+        /// Close after a pane jump instead of staying open
+        #[arg(long)]
+        oneshot: bool,
+    },
 
     /// Focus the Herdr pane where a command started
     Jump {
@@ -87,6 +91,27 @@ mod tests {
                 assert_eq!(command, expected);
             }
             _ => return Err("expected the run command".to_owned()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inbox_defaults_to_live_mode() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["hd", "inbox"]).map_err(|error| error.to_string())?;
+        match cli.command() {
+            Commands::Inbox { oneshot } => assert!(!oneshot),
+            _ => return Err("expected the inbox command".to_owned()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inbox_accepts_oneshot_mode() -> Result<(), String> {
+        let cli =
+            Cli::try_parse_from(["hd", "inbox", "--oneshot"]).map_err(|error| error.to_string())?;
+        match cli.command() {
+            Commands::Inbox { oneshot } => assert!(oneshot),
+            _ => return Err("expected the inbox command".to_owned()),
         }
         Ok(())
     }

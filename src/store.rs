@@ -283,11 +283,6 @@ fn create_parent(path: &Path) -> Result<(), String> {
         return Ok(());
     };
     fs::create_dir_all(parent).map_err(storage_error)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(storage_error)?;
-    }
     Ok(())
 }
 
@@ -376,6 +371,27 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_database_does_not_change_parent_permissions() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        let path = directory.path().join("events.db");
+
+        let _store = Store::open(path)?;
+
+        let mode = std::fs::metadata(directory.path())
+            .map_err(|error| error.to_string())?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
         Ok(())
     }
 }

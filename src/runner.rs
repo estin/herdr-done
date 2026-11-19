@@ -18,10 +18,10 @@ use signal_hook::SigId;
 #[cfg(unix)]
 use signal_hook::consts::{SIGINT, SIGTERM};
 #[cfg(unix)]
-use signal_hook::flag::register;
+use signal_hook::flag::register_usize;
 
 pub fn run(program: &OsString, args: &[OsString]) -> ExitCode {
-    let event = Event::new(program, args, herdr::current_context());
+    let mut event = Event::new(program, args, herdr::current_context());
     let store = match Store::open_default() {
         Ok(store) => Some(store),
         Err(error) => {
@@ -31,13 +31,21 @@ pub fn run(program: &OsString, args: &[OsString]) -> ExitCode {
     };
     persist(store.as_ref(), &event);
 
-    let mut child = match Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+    #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(unix)]
+    let monitor = SignalMonitor::new();
+    event.started_at = crate::event::now_millis();
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             eprintln!("hd: failed to run {}: {error}", program.to_string_lossy());
@@ -46,6 +54,9 @@ pub fn run(program: &OsString, args: &[OsString]) -> ExitCode {
         }
     };
 
+    #[cfg(unix)]
+    let monitor = monitor.forward(child.id());
+    #[cfg(not(unix))]
     let monitor = SignalMonitor::start(child.id());
     let status = match child.wait() {
         Ok(status) => status,
@@ -56,11 +67,11 @@ pub fn run(program: &OsString, args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let signal_requested = monitor.stop();
-    let signal = status_signal(status);
-    let code = exit_code(status);
+    let requested_signal = monitor.stop();
+    let signal = status_signal(status).or(requested_signal);
+    let code = signal.map_or_else(|| exit_code(status), exit_code_from_signal);
     let code_value = i32::from(code);
-    let finished = if signal.is_some() || signal_requested {
+    let finished = if signal.is_some() {
         event.interrupted(code_value, signal)
     } else {
         event.completed(code_value, signal)
@@ -87,6 +98,10 @@ fn exit_code(status: ExitStatus) -> u8 {
     }
 }
 
+fn exit_code_from_signal(signal: i32) -> u8 {
+    u8::try_from(128 + signal).unwrap_or(1)
+}
+
 #[cfg(unix)]
 fn status_signal(status: ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
@@ -100,7 +115,7 @@ fn status_signal(_status: ExitStatus) -> Option<i32> {
 
 #[cfg(unix)]
 struct SignalMonitor {
-    requested: Arc<AtomicBool>,
+    requested: Arc<std::sync::atomic::AtomicUsize>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     _registrations: Vec<SigId>,
@@ -108,43 +123,62 @@ struct SignalMonitor {
 
 #[cfg(unix)]
 impl SignalMonitor {
-    fn start(pid: u32) -> Self {
-        let requested = Arc::new(AtomicBool::new(false));
-        let stop = Arc::new(AtomicBool::new(false));
+    fn new() -> Self {
+        use std::sync::atomic::AtomicUsize;
+
+        let requested = Arc::new(AtomicUsize::new(0));
         let mut registrations = Vec::new();
         for signal in [SIGINT, SIGTERM] {
-            match register(signal, Arc::clone(&requested)) {
+            let Ok(value) = usize::try_from(signal) else {
+                continue;
+            };
+            match register_usize(signal, Arc::clone(&requested), value) {
                 Ok(id) => registrations.push(id),
                 Err(error) => eprintln!("hd: cannot handle signal {signal}: {error}"),
             }
         }
 
-        let thread_requested = Arc::clone(&requested);
-        let thread_stop = Arc::clone(&stop);
-        let child_pid = i32::try_from(pid).unwrap_or(0);
-        let handle = thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) {
-                if thread_requested.load(Ordering::Relaxed) {
-                    let _ = kill(Pid::from_raw(child_pid), Signal::SIGTERM);
-                    return;
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-        });
         Self {
             requested,
-            stop,
-            handle: Some(handle),
+            stop: Arc::new(AtomicBool::new(false)),
+            handle: None,
             _registrations: registrations,
         }
     }
 
-    fn stop(self) -> bool {
+    fn forward(mut self, pid: u32) -> Self {
+        let thread_requested = Arc::clone(&self.requested);
+        let thread_stop = Arc::clone(&self.stop);
+        let process_group = i32::try_from(pid).ok();
+        self.handle = Some(thread::spawn(move || {
+            loop {
+                let requested = thread_requested.load(Ordering::Relaxed);
+                if requested != 0 {
+                    if let Some(process_group) = process_group
+                        && let Ok(signal_number) = i32::try_from(requested)
+                        && let Ok(signal) = Signal::try_from(signal_number)
+                    {
+                        let _ = kill(Pid::from_raw(-process_group), signal);
+                    }
+                    return;
+                }
+                if thread_stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        }));
+        self
+    }
+
+    fn stop(self) -> Option<i32> {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle {
             let _ = handle.join();
         }
-        self.requested.load(Ordering::Relaxed)
+        i32::try_from(self.requested.load(Ordering::Relaxed))
+            .ok()
+            .filter(|signal| *signal != 0)
     }
 }
 
@@ -157,7 +191,7 @@ impl SignalMonitor {
         Self
     }
 
-    fn stop(self) -> bool {
-        false
+    fn stop(self) -> Option<i32> {
+        None
     }
 }

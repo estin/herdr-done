@@ -38,9 +38,10 @@ hd show ID
 
 ```sh
 hd inbox
+hd inbox --oneshot
 ```
 
-The inbox opens without marking events as read.
+The inbox opens without marking events as read. It refreshes the event list every second while it stays open. A pane jump keeps the inbox open and shows focus errors there. Use `hd inbox --oneshot` to close the inbox after a pane jump.
 
 | Key | Action |
 | --- | --- |
@@ -50,7 +51,7 @@ The inbox opens without marking events as read.
 | `n` | Select the next unread event |
 | `r` | Mark the selected event as read |
 | `u` | Mark the selected event as unread |
-| `J` | Focus the source Herdr pane |
+| `J` | Focus the source Herdr pane and keep the live inbox open |
 | `q` | Quit |
 
 Read and unread changes persist in the database.
@@ -71,6 +72,6 @@ hd jump ID
 Usage: hd run <COMMAND>...
 Usage: hd list [OPTIONS]
 Usage: hd show <ID>
-Usage: hd inbox
+Usage: hd inbox [OPTIONS]
 Usage: hd jump <ID>
 ```

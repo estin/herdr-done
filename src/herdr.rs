@@ -1,9 +1,10 @@
 use crate::event::HerdrContext;
+use crate::store::Store;
 use serde_json::Value;
 use std::env;
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -75,6 +76,32 @@ pub fn parse_pane_current(bytes: &[u8]) -> Result<HerdrContext, String> {
         pane_id: field("pane_id"),
         terminal_id: field("terminal_id"),
     })
+}
+
+pub fn focus_event(store: &Store, id: &str) -> Result<String, String> {
+    if env::var_os("HERDR_ENV").as_deref() != Some(OsString::from("1").as_os_str()) {
+        return Err("Herdr context is unavailable".to_owned());
+    }
+    let event = store
+        .get(id)?
+        .ok_or_else(|| format!("no event found for {id}"))?;
+    let pane_id = event
+        .herdr
+        .pane_id
+        .ok_or_else(|| "event has no Herdr pane".to_owned())?;
+    if let (Some(expected), Some(actual)) =
+        (&event.herdr.session_id, env::var("HERDR_SESSION").ok())
+        && expected != &actual
+    {
+        return Err(format!(
+            "event belongs to Herdr session {expected}, not {actual}"
+        ));
+    }
+    let socket_path = env::var_os("HERDR_SOCKET_PATH")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HERDR_SOCKET_PATH is unavailable".to_owned())?;
+    focus_pane(&socket_path, &pane_id)?;
+    Ok(pane_id)
 }
 
 #[cfg(unix)]

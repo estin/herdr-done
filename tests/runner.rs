@@ -143,40 +143,64 @@ fn storage_failure_preserves_child_exit_code() -> Result<(), Box<dyn std::error:
 #[cfg(unix)]
 #[test]
 fn terminates_child_and_records_interrupted_event() -> Result<(), Box<dyn std::error::Error>> {
-    use nix::sys::signal::{Signal, kill};
+    use nix::sys::signal::Signal;
+
+    assert_signal_forwarded(Signal::SIGTERM, 143, true)
+}
+
+#[cfg(unix)]
+#[test]
+fn forwards_sigint_and_records_interrupted_event() -> Result<(), Box<dyn std::error::Error>> {
+    use nix::sys::signal::Signal;
+
+    assert_signal_forwarded(Signal::SIGINT, 130, false)
+}
+
+#[cfg(unix)]
+fn assert_signal_forwarded(
+    signal: nix::sys::signal::Signal,
+    expected_code: i32,
+    check_descendant_cleanup: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use nix::sys::signal::kill;
     use nix::unistd::Pid;
 
     let directory = tempdir()?;
     let database = directory.path().join("events.db");
-    let pid_file = directory.path().join("child.pid");
+    let ready_file = directory.path().join("child-ready");
+    let marker_file = directory.path().join("child-finished");
     let script = directory.path().join("slow.sh");
+    let child = if check_descendant_cleanup {
+        format!("(sleep 1; touch \"{}\") &\n", marker_file.display())
+    } else {
+        String::new()
+    };
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\nprintf '%s' $$ > \"{}\"\nexec sleep 30\n",
-            pid_file.display()
+            "#!/bin/sh\n{child}printf ready > \"{}\"\nexec sleep 30\n",
+            ready_file.display()
         ),
     )?;
     set_executable(&script)?;
 
     let mut child = hd(&database).arg("run").arg("--").arg(&script).spawn()?;
-    wait_for_file(&pid_file)?;
-    std::thread::sleep(Duration::from_millis(100));
-    let child_pid = fs::read_to_string(&pid_file)?
-        .parse::<i32>()
-        .map_err(|error| error.to_string())?;
+    wait_for_file(&ready_file)?;
     let wrapper_pid = i32::try_from(child.id()).map_err(|error| error.to_string())?;
-    kill(Pid::from_raw(wrapper_pid), Signal::SIGTERM)?;
+    kill(Pid::from_raw(wrapper_pid), signal)?;
 
     let status = wait_for_exit(&mut child)?;
-    assert_eq!(status.code(), Some(143));
-    assert!(kill(Pid::from_raw(child_pid), None).is_err());
+    assert_eq!(status.code(), Some(expected_code));
+    if check_descendant_cleanup {
+        std::thread::sleep(Duration::from_millis(1100));
+        assert!(!marker_file.exists());
+    }
 
     let store = Store::open(&database)?;
     let events = store.list(10, false)?;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].status, EventStatus::Interrupted);
-    assert_eq!(events[0].signal, Some(15));
+    assert_eq!(events[0].signal, Some(expected_code - 128));
     Ok(())
 }
 
@@ -187,6 +211,7 @@ fn set_executable(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn wait_for_file(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !path.exists() {

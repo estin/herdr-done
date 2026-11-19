@@ -1,4 +1,5 @@
 use crate::event::{Event, now_millis};
+use crate::herdr;
 use crate::store::Store;
 use crossterm::event::{self, Event as TerminalEvent, KeyCode};
 use crossterm::execute;
@@ -14,7 +15,22 @@ use ratatui::widgets::{
 };
 use ratatui::{Frame, Terminal};
 use std::io::{self, Stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    Live,
+    Oneshot,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Outcome {
+    Continue,
+    Quit,
+    Jump(String),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum View {
@@ -65,7 +81,7 @@ impl App {
     pub fn handle_key(&mut self, key: KeyCode) -> Action {
         self.message = None;
         match (self.view, key) {
-            (View::List, KeyCode::Char('q')) => Action::Quit,
+            (_, KeyCode::Char('q')) => Action::Quit,
             (View::Detail, KeyCode::Esc) => {
                 self.view = View::List;
                 Action::None
@@ -109,6 +125,15 @@ impl App {
         self.message = Some(message);
     }
 
+    pub fn refresh(&mut self, events: Vec<Event>) {
+        let selected_id = self.selected_event().map(|event| event.id.clone());
+        self.events = events;
+        self.selected = selected_id
+            .as_deref()
+            .and_then(|id| self.events.iter().position(|event| event.id == id))
+            .unwrap_or(0);
+    }
+
     fn move_selection(&mut self, delta: isize) {
         if self.events.is_empty() {
             return;
@@ -136,14 +161,14 @@ impl App {
     }
 }
 
-pub fn run(store: &Store) -> Result<Option<String>, String> {
+pub fn run(store: &Store, mode: Mode) -> Result<Option<String>, String> {
     let events = store.list(100, false)?;
     let mut app = App::new(events);
-    let outcome = run_terminal(&mut app, store)?;
+    let outcome = run_terminal(&mut app, store, mode)?;
     Ok(outcome)
 }
 
-fn run_terminal(app: &mut App, store: &Store) -> Result<Option<String>, String> {
+fn run_terminal(app: &mut App, store: &Store, mode: Mode) -> Result<Option<String>, String> {
     enable_raw_mode().map_err(|error| format!("terminal error: {error}"))?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -154,7 +179,7 @@ fn run_terminal(app: &mut App, store: &Store) -> Result<Option<String>, String> 
     let mut terminal =
         Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
 
-    let result = event_loop(&mut terminal, app, store);
+    let result = event_loop(&mut terminal, app, store, mode);
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let _ = terminal.show_cursor();
@@ -165,31 +190,58 @@ fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     store: &Store,
+    mode: Mode,
 ) -> Result<Option<String>, String> {
+    let mut last_refresh = Instant::now();
     loop {
         terminal
             .draw(|frame| render(frame, app))
             .map_err(|error| format!("terminal error: {error}"))?;
-        if !event::poll(Duration::from_millis(200))
+        if event::poll(Duration::from_millis(200))
             .map_err(|error| format!("input error: {error}"))?
         {
-            continue;
+            let key = match event::read().map_err(|error| format!("input error: {error}"))? {
+                TerminalEvent::Key(key) => key.code,
+                _ => continue,
+            };
+            let action = app.handle_key(key);
+            match apply_action(app, store, action, mode, &herdr::focus_event) {
+                Outcome::Continue => {}
+                Outcome::Quit => return Ok(None),
+                Outcome::Jump(id) => return Ok(Some(id)),
+            }
         }
-        let key = match event::read().map_err(|error| format!("input error: {error}"))? {
-            TerminalEvent::Key(key) => key.code,
-            _ => continue,
-        };
-        match app.handle_key(key) {
-            Action::None => {}
-            Action::Quit => return Ok(None),
-            Action::Jump(id) => return Ok(Some(id)),
-            Action::Read(id, read) => match store.set_read(&id, read) {
-                Ok(true) => app.apply_read(&id, read),
-                Ok(false) => app.set_message("event no longer exists".to_owned()),
-                Err(error) => app.set_message(error),
-            },
+        if last_refresh.elapsed() >= REFRESH_INTERVAL {
+            app.refresh(store.list(100, false)?);
+            last_refresh = Instant::now();
         }
     }
+}
+
+fn apply_action(
+    app: &mut App,
+    store: &Store,
+    action: Action,
+    mode: Mode,
+    focus: &dyn Fn(&Store, &str) -> Result<String, String>,
+) -> Outcome {
+    match action {
+        Action::None => {}
+        Action::Quit => return Outcome::Quit,
+        Action::Jump(id) => match mode {
+            Mode::Live => match focus(store, &id) {
+                Ok(pane_id) => app.set_message(format!("focused pane {pane_id}")),
+                Err(error) => app.set_message(error),
+            },
+            Mode::Oneshot => return Outcome::Jump(id),
+        },
+        Action::Read(id, read) => match store.set_read(&id, read) {
+            Ok(true) => app.apply_read(&id, read),
+            Ok(false) => app.set_message("event no longer exists".to_owned()),
+            Err(error) => app.set_message(error),
+        },
+    }
+    Outcome::Continue
 }
 
 fn render(frame: &mut Frame<'_>, app: &App) {
@@ -298,27 +350,31 @@ fn detail_line(label: &'static str, value: impl Into<String>) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, App, View, render};
+    use super::{Action, App, Mode, Outcome, View, apply_action, render};
     use crate::event::{Event, HerdrContext};
+    use crate::store::Store;
     use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::ffi::OsStr;
+    use tempfile::tempdir;
+
+    fn named_event(name: &str) -> Event {
+        Event::new(
+            OsStr::new(name),
+            &[],
+            HerdrContext {
+                pane_id: Some("w1:p1".to_owned()),
+                ..HerdrContext::default()
+            },
+        )
+        .completed(0, None)
+    }
 
     fn events() -> Vec<Event> {
         ["first", "second", "third"]
             .into_iter()
-            .map(|name| {
-                Event::new(
-                    OsStr::new(name),
-                    &[],
-                    HerdrContext {
-                        pane_id: Some("w1:p1".to_owned()),
-                        ..HerdrContext::default()
-                    },
-                )
-                .completed(0, None)
-            })
+            .map(named_event)
             .collect()
     }
 
@@ -331,6 +387,98 @@ mod tests {
         assert_eq!(app.selected_index(), 0);
         assert_eq!(app.handle_key(KeyCode::Up), Action::None);
         assert_eq!(app.selected_index(), 2);
+    }
+
+    #[test]
+    fn refresh_keeps_the_selected_event_by_id() {
+        let mut app = App::new(events());
+        app.selected = 1;
+        let selected = app.events[1].clone();
+        app.refresh(vec![named_event("newest"), selected.clone()]);
+        assert_eq!(app.selected_index(), 1);
+        assert_eq!(
+            app.selected_event().map(|event| event.id.as_str()),
+            Some(selected.id.as_str())
+        );
+    }
+
+    #[test]
+    fn refresh_selects_newest_when_selection_disappears() {
+        let mut app = App::new(events());
+        app.selected = 1;
+        app.refresh(vec![named_event("newest")]);
+        assert_eq!(app.selected_index(), 0);
+        assert_eq!(
+            app.selected_event().map(Event::command_line),
+            Some("newest".to_owned())
+        );
+    }
+
+    #[test]
+    fn live_jump_stays_open_after_success() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let store = Store::open(directory.path().join("events.db"))?;
+        let mut app = App::new(events());
+        let id = app
+            .selected_event()
+            .map(|event| event.id.clone())
+            .ok_or_else(|| "no event selected".to_owned())?;
+
+        let outcome = apply_action(&mut app, &store, Action::Jump(id), Mode::Live, &|_, _| {
+            Ok("w1:p1".to_owned())
+        });
+
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(app.message.as_deref(), Some("focused pane w1:p1"));
+        Ok(())
+    }
+
+    #[test]
+    fn live_jump_shows_focus_errors() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let store = Store::open(directory.path().join("events.db"))?;
+        let mut app = App::new(events());
+        let id = app
+            .selected_event()
+            .map(|event| event.id.clone())
+            .ok_or_else(|| "no event selected".to_owned())?;
+
+        let outcome = apply_action(&mut app, &store, Action::Jump(id), Mode::Live, &|_, _| {
+            Err("pane not found".to_owned())
+        });
+
+        assert_eq!(outcome, Outcome::Continue);
+        assert_eq!(app.message.as_deref(), Some("pane not found"));
+        Ok(())
+    }
+
+    #[test]
+    fn oneshot_jump_closes_the_inbox() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let store = Store::open(directory.path().join("events.db"))?;
+        let mut app = App::new(events());
+        let id = app
+            .selected_event()
+            .map(|event| event.id.clone())
+            .ok_or_else(|| "no event selected".to_owned())?;
+
+        let outcome = apply_action(
+            &mut app,
+            &store,
+            Action::Jump(id.clone()),
+            Mode::Oneshot,
+            &|_, _| Err("focus must not run".to_owned()),
+        );
+
+        assert_eq!(outcome, Outcome::Jump(id));
+        Ok(())
+    }
+
+    #[test]
+    fn q_quits_from_the_detail_view() {
+        let mut app = App::new(events());
+        app.view = View::Detail;
+        assert_eq!(app.handle_key(KeyCode::Char('q')), Action::Quit);
     }
 
     #[test]

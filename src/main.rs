@@ -4,9 +4,7 @@ use herdr_done::herdr;
 use herdr_done::inbox;
 use herdr_done::runner;
 use herdr_done::store::Store;
-use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -26,7 +24,7 @@ fn dispatch(command: Commands) -> ExitCode {
         }
         Commands::List { unread, limit } => list(unread, limit),
         Commands::Show { id } => show(&id),
-        Commands::Inbox => open_inbox(),
+        Commands::Inbox { oneshot } => open_inbox(oneshot),
         Commands::Jump { id } => jump(&id),
     }
 }
@@ -96,12 +94,17 @@ fn show(id: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn open_inbox() -> ExitCode {
+fn open_inbox(oneshot: bool) -> ExitCode {
     let store = match Store::open_default() {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
-    match inbox::run(&store) {
+    let mode = if oneshot {
+        inbox::Mode::Oneshot
+    } else {
+        inbox::Mode::Live
+    };
+    match inbox::run(&store, mode) {
         Ok(Some(id)) => jump(&id),
         Ok(None) => ExitCode::SUCCESS,
         Err(error) => fail(&error),
@@ -109,35 +112,12 @@ fn open_inbox() -> ExitCode {
 }
 
 fn jump(id: &str) -> ExitCode {
-    if env::var_os("HERDR_ENV").as_deref() != Some(OsString::from("1").as_os_str()) {
-        return fail("Herdr context is unavailable");
-    }
     let store = match Store::open_default() {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
-    let event = match store.get(id) {
-        Ok(Some(event)) => event,
-        Ok(None) => return fail(&format!("no event found for {id}")),
-        Err(error) => return fail(&error),
-    };
-    let Some(pane_id) = event.herdr.pane_id else {
-        return fail("event has no Herdr pane");
-    };
-    if let (Some(expected), Some(actual)) =
-        (&event.herdr.session_id, env::var("HERDR_SESSION").ok())
-        && expected != &actual
-    {
-        return fail(&format!(
-            "event belongs to Herdr session {expected}, not {actual}"
-        ));
-    }
-    let Some(socket_path) = env::var_os("HERDR_SOCKET_PATH") else {
-        return fail("HERDR_SOCKET_PATH is unavailable");
-    };
-    let socket_path = PathBuf::from(socket_path);
-    match herdr::focus_pane(&socket_path, &pane_id) {
-        Ok(()) => {
+    match herdr::focus_event(&store, id) {
+        Ok(pane_id) => {
             println!("focused pane {pane_id}");
             ExitCode::SUCCESS
         }

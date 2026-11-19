@@ -37,19 +37,23 @@ The system MUST store each tracked command's arguments, working directory, start
 - **THEN** `hd` reports the storage failure and preserves the command's exit result
 
 ### Requirement: List and inspect completion events
-The system MUST let users list recent events and inspect an event by identifier. Lists MUST order events by finish time, newest first, and MUST support filtering for unread events.
+The system MUST let users list recent events and inspect an event by identifier. Lists MUST order events by finish time, newest first, and MUST support filtering for unread events. The inbox MUST display available Herdr workspace, tab, and pane names instead of their IDs.
 
 #### Scenario: List recent events
 - **WHEN** a user requests the event list
-- **THEN** the system displays recent events in completion order with their result and duration
+- **THEN** the system displays recent events in completion order with their result, duration, and available Herdr location names
 
 #### Scenario: Inspect an event
 - **WHEN** a user requests an existing event by identifier
-- **THEN** the system displays its command, working directory, result, timing, and available Herdr context
+- **THEN** the system displays its command, working directory, result, timing, and available Herdr context using names instead of IDs for workspace, tab, and pane labels
 
 #### Scenario: Inspect an unknown event
 - **WHEN** a user requests an identifier that does not exist
 - **THEN** the system reports that no matching event exists
+
+#### Scenario: Herdr names are unavailable
+- **WHEN** an event has a Herdr ID but no corresponding saved name
+- **THEN** the inbox does not present the ID as a human-readable name and shows the location as unavailable
 
 ### Requirement: Review events in an interactive inbox
 The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, and navigation to the next unread event. By default, the inbox MUST refresh its recent events while it remains open and MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump.

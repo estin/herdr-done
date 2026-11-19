@@ -85,12 +85,7 @@ fn show(id: &str) -> ExitCode {
         "Herdr session: {}",
         event.herdr.session_id.as_deref().unwrap_or("-")
     );
-    println!(
-        "Workspace: {}",
-        event.herdr.workspace_id.as_deref().unwrap_or("-")
-    );
-    println!("Tab: {}", event.herdr.tab_id.as_deref().unwrap_or("-"));
-    println!("Pane: {}", event.herdr.pane_id.as_deref().unwrap_or("-"));
+    println!("Herdr location: {}", event.location_label());
     ExitCode::SUCCESS
 }
 

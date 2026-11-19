@@ -319,12 +319,7 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
                 "Herdr session",
                 event.herdr.session_id.as_deref().unwrap_or("-"),
             ),
-            detail_line(
-                "Workspace",
-                event.herdr.workspace_id.as_deref().unwrap_or("-"),
-            ),
-            detail_line("Tab", event.herdr.tab_id.as_deref().unwrap_or("-")),
-            detail_line("Pane", event.herdr.pane_id.as_deref().unwrap_or("-")),
+            detail_line("Herdr location", event.location_label()),
         ],
         None => vec![Line::from("No events")],
     };
@@ -364,7 +359,10 @@ mod tests {
             OsStr::new(name),
             &[],
             HerdrContext {
+                workspace_name: Some("worker".to_owned()),
+                tab_name: Some("backend".to_owned()),
                 pane_id: Some("w1:p1".to_owned()),
+                pane_name: Some("build".to_owned()),
                 ..HerdrContext::default()
             },
         )
@@ -532,7 +530,8 @@ mod tests {
         assert!(content.contains("Command:"));
         assert!(content.contains("first"));
         assert!(content.contains("Result:"));
-        assert!(content.contains("w1:p1"));
+        assert!(content.contains("worker / backend / build"));
+        assert!(!content.contains("w1:p1"));
         Ok(())
     }
 }

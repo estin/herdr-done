@@ -23,18 +23,34 @@ pub fn detect_context(lookup: &dyn Fn(&str) -> Option<OsString>) -> HerdrContext
         workspace_id: string_value(lookup, "HERDR_WORKSPACE_ID"),
         workspace_name: None,
         tab_id: string_value(lookup, "HERDR_TAB_ID"),
+        tab_name: None,
         pane_id: string_value(lookup, "HERDR_PANE_ID"),
+        pane_name: None,
         terminal_id: None,
     };
 
     let binary = string_value(lookup, "HERDR_BIN_PATH").unwrap_or_else(|| "herdr".to_owned());
-    if let Ok(output) = std::process::Command::new(binary)
+    if let Ok(output) = std::process::Command::new(&binary)
         .args(["pane", "current", "--current"])
         .output()
         && output.status.success()
         && let Ok(from_cli) = parse_pane_current(&output.stdout)
     {
         merge(&mut context, from_cli);
+    }
+    if let Some(workspace_id) = context.workspace_id.clone()
+        && let Some(name) = query_label(
+            &binary,
+            &["workspace", "get", &workspace_id],
+            parse_workspace_label,
+        )
+    {
+        context.workspace_name = Some(name);
+    }
+    if let Some(tab_id) = context.tab_id.clone()
+        && let Some(name) = query_label(&binary, &["tab", "get", &tab_id], parse_tab_label)
+    {
+        context.tab_name = Some(name);
     }
     context
 }
@@ -49,8 +65,14 @@ fn merge(context: &mut HerdrContext, from_cli: HerdrContext) {
     if from_cli.tab_id.is_some() {
         context.tab_id = from_cli.tab_id;
     }
+    if from_cli.tab_name.is_some() {
+        context.tab_name = from_cli.tab_name;
+    }
     if from_cli.pane_id.is_some() {
         context.pane_id = from_cli.pane_id;
+    }
+    if from_cli.pane_name.is_some() {
+        context.pane_name = from_cli.pane_name;
     }
     if from_cli.terminal_id.is_some() {
         context.terminal_id = from_cli.terminal_id;
@@ -73,9 +95,44 @@ pub fn parse_pane_current(bytes: &[u8]) -> Result<HerdrContext, String> {
         workspace_id: field("workspace_id"),
         workspace_name: None,
         tab_id: field("tab_id"),
+        tab_name: field("tab_name"),
         pane_id: field("pane_id"),
+        pane_name: field("label").or_else(|| field("title")),
         terminal_id: field("terminal_id"),
     })
+}
+
+fn query_label(
+    binary: &str,
+    args: &[&str],
+    parser: fn(&[u8]) -> Result<String, String>,
+) -> Option<String> {
+    let output = std::process::Command::new(binary)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parser(&output.stdout).ok()
+}
+
+fn parse_workspace_label(bytes: &[u8]) -> Result<String, String> {
+    label_from_pointer(bytes, "/result/workspace/label")
+}
+
+fn parse_tab_label(bytes: &[u8]) -> Result<String, String> {
+    label_from_pointer(bytes, "/result/tab/label")
+}
+
+fn label_from_pointer(bytes: &[u8], pointer: &str) -> Result<String, String> {
+    let response: Value = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    response
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("no label at {pointer}"))
 }
 
 pub fn focus_event(store: &Store, id: &str) -> Result<String, String> {
@@ -152,9 +209,12 @@ fn string_value(lookup: &dyn Fn(&str) -> Option<OsString>, key: &str) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_context, focus_pane, parse_pane_current};
+    use super::{
+        detect_context, focus_pane, parse_pane_current, parse_tab_label, parse_workspace_label,
+    };
     use std::collections::HashMap;
     use std::ffi::OsString;
+    use std::fs;
     use std::io::{BufRead, BufReader, Write};
     use std::path::Path;
 
@@ -167,6 +227,92 @@ mod tests {
         assert_eq!(context.tab_id.as_deref(), Some("w11:t3"));
         assert_eq!(context.pane_id.as_deref(), Some("w11:p7"));
         assert_eq!(context.terminal_id.as_deref(), Some("term_6609258221ebd50"));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_workspace_and_tab_labels() -> Result<(), String> {
+        let workspace = br#"{"id":"cli:workspace:get","result":{"type":"workspace_info","workspace":{"active_tab_id":"w11:t2","label":"herdr-done","number":8,"workspace_id":"w11"}}}"#;
+        let tab = br#"{"id":"cli:tab:get","result":{"tab":{"label":"agent","number":2,"tab_id":"w11:t2","workspace_id":"w11"},"type":"tab_info"}}"#;
+        assert_eq!(parse_workspace_label(workspace)?, "herdr-done");
+        assert_eq!(parse_tab_label(tab)?, "agent");
+        Ok(())
+    }
+
+    #[test]
+    fn pane_label_wins_over_title() -> Result<(), String> {
+        let output = br#"{"id":"cli:pane:current","result":{"pane":{"label":"build","title":"terminal","pane_id":"w11:p7","tab_id":"w11:t3","workspace_id":"w11","type":"pane_current"}}}"#;
+        let context = parse_pane_current(output)?;
+        assert_eq!(context.pane_name.as_deref(), Some("build"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn captures_names_from_documented_commands() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = directory.path().join("fake-herdr");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+case "$*" in
+  "pane current --current") printf '%s
+' '{"id":"cli:pane:current","result":{"pane":{"label":"build","title":"terminal","pane_id":"w4:p3","tab_id":"w4:t2","workspace_id":"w4","type":"pane_current"}}}' ;;
+  "workspace get w4") printf '%s
+' '{"id":"cli:workspace:get","result":{"type":"workspace_info","workspace":{"label":"worker","workspace_id":"w4"}}}' ;;
+  "tab get w4:t2") printf '%s
+' '{"id":"cli:tab:get","result":{"type":"tab_info","tab":{"label":"backend","tab_id":"w4:t2","workspace_id":"w4"}}}' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        let values = HashMap::from([
+            ("HERDR_ENV".to_owned(), OsString::from("1")),
+            ("HERDR_SESSION".to_owned(), OsString::from("job")),
+            ("HERDR_BIN_PATH".to_owned(), binary.into_os_string()),
+        ]);
+
+        let context = detect_context(&|key| values.get(key).cloned());
+        assert_eq!(context.workspace_name.as_deref(), Some("worker"));
+        assert_eq!(context.tab_name.as_deref(), Some("backend"));
+        assert_eq!(context.pane_name.as_deref(), Some("build"));
+        assert_eq!(context.pane_id.as_deref(), Some("w4:p3"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_names_do_not_fail_context_detection() -> Result<(), String> {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let binary = directory.path().join("fake-herdr");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+case "$*" in
+  "pane current --current") printf '%s
+' '{"id":"cli:pane:current","result":{"pane":{"title":"terminal","pane_id":"w5:p1","tab_id":"w5:t1","workspace_id":"w5","type":"pane_current"}}}' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+            .map_err(|error| error.to_string())?;
+        let values = HashMap::from([
+            ("HERDR_ENV".to_owned(), OsString::from("1")),
+            ("HERDR_BIN_PATH".to_owned(), binary.into_os_string()),
+        ]);
+
+        let context = detect_context(&|key| values.get(key).cloned());
+        assert_eq!(context.pane_name.as_deref(), Some("terminal"));
+        assert_eq!(context.workspace_name, None);
+        assert_eq!(context.tab_name, None);
+        assert_eq!(context.pane_id.as_deref(), Some("w5:p1"));
         Ok(())
     }
 

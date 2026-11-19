@@ -46,7 +46,9 @@ pub struct HerdrContext {
     pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,
     pub tab_id: Option<String>,
+    pub tab_name: Option<String>,
     pub pane_id: Option<String>,
+    pub pane_name: Option<String>,
     pub terminal_id: Option<String>,
 }
 
@@ -56,7 +58,9 @@ impl HerdrContext {
             && self.workspace_id.is_none()
             && self.workspace_name.is_none()
             && self.tab_id.is_none()
+            && self.tab_name.is_none()
             && self.pane_id.is_none()
+            && self.pane_name.is_none()
             && self.terminal_id.is_none()
     }
 }
@@ -183,18 +187,25 @@ impl Event {
     }
 
     pub fn location_label(&self) -> String {
-        match (
-            &self.herdr.workspace_id,
-            &self.herdr.tab_id,
-            &self.herdr.pane_id,
-        ) {
-            (Some(workspace), Some(tab), Some(pane)) => {
-                format!("{workspace} / {tab} / {pane}")
-            }
-            (Some(workspace), _, Some(pane)) => format!("{workspace} / {pane}"),
-            (None, _, Some(pane)) => pane.clone(),
-            _ => "outside Herdr".to_owned(),
+        let names: Vec<&str> = [
+            self.herdr.workspace_name.as_deref(),
+            self.herdr.tab_name.as_deref(),
+            self.herdr.pane_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|name| !name.is_empty())
+        .collect();
+        if !names.is_empty() {
+            return names.join(" / ");
         }
+        if self.herdr.workspace_id.is_some()
+            || self.herdr.tab_id.is_some()
+            || self.herdr.pane_id.is_some()
+        {
+            return "location unavailable".to_owned();
+        }
+        "outside Herdr".to_owned()
     }
 }
 
@@ -245,6 +256,56 @@ mod tests {
         assert!(event.finished_at.is_some());
         assert!(event.duration_ms.is_some());
         assert_eq!(event.result_label(), "exit 42");
+    }
+
+    #[test]
+    fn location_uses_names_not_ids() {
+        let event = Event::new(
+            OsStr::new("cargo"),
+            &[],
+            HerdrContext {
+                workspace_id: Some("w1".to_owned()),
+                workspace_name: Some("worker".to_owned()),
+                tab_id: Some("w1:t1".to_owned()),
+                tab_name: Some("backend".to_owned()),
+                pane_id: Some("w1:p1".to_owned()),
+                pane_name: Some("build".to_owned()),
+                ..HerdrContext::default()
+            },
+        );
+        assert_eq!(event.location_label(), "worker / backend / build");
+    }
+
+    #[test]
+    fn location_hides_ids_when_names_are_missing() {
+        let event = Event::new(
+            OsStr::new("cargo"),
+            &[],
+            HerdrContext {
+                workspace_id: Some("w1".to_owned()),
+                tab_id: Some("w1:t1".to_owned()),
+                pane_id: Some("w1:p1".to_owned()),
+                ..HerdrContext::default()
+            },
+        );
+        assert_eq!(event.location_label(), "location unavailable");
+    }
+
+    #[test]
+    fn location_shows_only_available_names() {
+        let event = Event::new(
+            OsStr::new("cargo"),
+            &[],
+            HerdrContext {
+                workspace_id: Some("w1".to_owned()),
+                workspace_name: Some("worker".to_owned()),
+                tab_id: Some("w1:t1".to_owned()),
+                pane_id: Some("w1:p1".to_owned()),
+                pane_name: Some("build".to_owned()),
+                ..HerdrContext::default()
+            },
+        );
+        assert_eq!(event.location_label(), "worker / build");
     }
 
     #[test]

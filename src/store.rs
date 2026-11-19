@@ -9,7 +9,8 @@ use std::time::Duration;
 
 const COLUMNS: &str = "id, program, args_json, cwd, started_at, finished_at, duration_ms, \
                        status, exit_code, signal, failure_reason, read_at, session_id, \
-                       workspace_id, workspace_name, tab_id, pane_id, terminal_id, hostname";
+                       workspace_id, workspace_name, tab_id, pane_id, terminal_id, hostname, \
+                       tab_name, pane_name";
 
 const MIGRATION_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -44,6 +45,11 @@ CREATE TABLE events (
 CREATE INDEX idx_events_finished ON events(finished_at DESC);
 CREATE INDEX idx_events_unread ON events(read_at, finished_at DESC);
 CREATE INDEX idx_events_pane ON events(session_id, pane_id);
+";
+
+const MIGRATION_V2: &str = "
+ALTER TABLE events ADD COLUMN tab_name TEXT;
+ALTER TABLE events ADD COLUMN pane_name TEXT;
 ";
 
 pub struct Store {
@@ -94,9 +100,9 @@ impl Store {
                     id, program, args_json, cwd, started_at, finished_at, duration_ms,
                     status, exit_code, signal, failure_reason, read_at,
                     session_id, workspace_id, workspace_name, tab_id, pane_id, terminal_id,
-                    hostname
+                    hostname, tab_name, pane_name
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                           ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
                 params![
                     &event.id,
                     &event.program,
@@ -117,6 +123,8 @@ impl Store {
                     &event.herdr.pane_id,
                     &event.herdr.terminal_id,
                     &event.hostname,
+                    &event.herdr.tab_name,
+                    &event.herdr.pane_name,
                 ],
             )
             .map_err(storage_error)?;
@@ -200,6 +208,22 @@ impl Store {
                 )
                 .map_err(storage_error)?;
         }
+        let version: Option<i64> = transaction
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .map_err(storage_error)?;
+        if version.unwrap_or(0) < 2 {
+            transaction
+                .execute_batch(MIGRATION_V2)
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?1)",
+                    params![now_millis()],
+                )
+                .map_err(storage_error)?;
+        }
         transaction.commit().map_err(storage_error)
     }
 }
@@ -248,7 +272,9 @@ fn row_to_event(row: &Row<'_>) -> Result<Event, rusqlite::Error> {
             workspace_id: row.get(13)?,
             workspace_name: row.get(14)?,
             tab_id: row.get(15)?,
+            tab_name: row.get(19)?,
             pane_id: row.get(16)?,
+            pane_name: row.get(20)?,
             terminal_id: row.get(17)?,
         },
         hostname: row.get(18)?,
@@ -299,8 +325,9 @@ fn restrict_file(path: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Store;
+    use super::{MIGRATION_TABLE, MIGRATION_V1, Store};
     use crate::event::{Event, EventStatus, HerdrContext};
+    use rusqlite::Connection;
     use std::ffi::{OsStr, OsString};
     use std::thread;
     use std::time::Duration;
@@ -333,6 +360,72 @@ mod tests {
             )
             .map_err(|error| error.to_string())?;
         assert_eq!(table, "events");
+        Ok(())
+    }
+
+    #[test]
+    fn loads_events_created_before_name_columns() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let path = directory.path().join("events.db");
+        let connection = Connection::open(&path).map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(MIGRATION_TABLE)
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(MIGRATION_V1)
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (1, 0)",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO events (
+                    id, program, args_json, cwd, started_at, finished_at, duration_ms,
+                    status, exit_code, signal, failure_reason, read_at,
+                    session_id, workspace_id, workspace_name, tab_id, pane_id, terminal_id,
+                    hostname
+                 ) VALUES (
+                    'old', 'cargo', '[]', '/tmp', 1, 2, 1, 'completed', 0, NULL,
+                    NULL, NULL, 'job', 'w1', 'worker', 'w1:t1', 'w1:p1', NULL, 'host'
+                 )",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        drop(connection);
+
+        let store = Store::open(&path)?;
+        let event = store
+            .get("old")?
+            .ok_or_else(|| "old event missing".to_owned())?;
+        assert_eq!(event.herdr.workspace_name.as_deref(), Some("worker"));
+        assert_eq!(event.herdr.tab_name, None);
+        assert_eq!(event.herdr.pane_name, None);
+        assert_eq!(event.herdr.pane_id.as_deref(), Some("w1:p1"));
+        Ok(())
+    }
+
+    #[test]
+    fn saves_name_columns_with_events() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let store = Store::open(directory.path().join("events.db"))?;
+        let event = Event::new(
+            OsStr::new("cargo"),
+            &[],
+            HerdrContext {
+                workspace_name: Some("worker".to_owned()),
+                tab_name: Some("backend".to_owned()),
+                pane_name: Some("build".to_owned()),
+                ..HerdrContext::default()
+            },
+        )
+        .completed(0, None);
+        store.upsert(&event)?;
+        let saved = store.get(&event.id)?.ok_or("event missing".to_owned())?;
+        assert_eq!(saved.herdr.tab_name.as_deref(), Some("backend"));
+        assert_eq!(saved.herdr.pane_name.as_deref(), Some("build"));
         Ok(())
     }
 

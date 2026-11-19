@@ -12,9 +12,11 @@ fn context() -> HerdrContext {
     HerdrContext {
         session_id: Some("job".to_owned()),
         workspace_id: Some("w3".to_owned()),
-        workspace_name: None,
+        workspace_name: Some("worker".to_owned()),
         tab_id: Some("w3:t1".to_owned()),
+        tab_name: Some("backend".to_owned()),
         pane_id: Some("w3:p2".to_owned()),
+        pane_name: Some("build".to_owned()),
         terminal_id: None,
     }
 }
@@ -72,7 +74,8 @@ fn show_displays_event_fields() -> Result<(), Box<dyn std::error::Error>> {
     assert!(stdout.contains("Result: exit 0"));
     assert!(stdout.contains("Duration:"));
     assert!(stdout.contains("job"));
-    assert!(stdout.contains("w3:p2"));
+    assert!(stdout.contains("worker / backend / build"));
+    assert!(!stdout.contains("w3:p2"));
     Ok(())
 }
 

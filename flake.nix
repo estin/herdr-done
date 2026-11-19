@@ -17,6 +17,21 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      packages = forAllSystems (pkgs: {
+        default = pkgs.rustPlatform.buildRustPackage {
+          pname = "herdr-done";
+          version = "0.1.0";
+          src = self;
+          cargoLock.lockFile = ./Cargo.lock;
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.sqlite ];
+          meta = {
+            description = "Command completion inbox for Herdr";
+            mainProgram = "hd";
+          };
+        };
+      });
+
       # Tools used by `just ci`.
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {

@@ -8,7 +8,7 @@ use tempfile::tempdir;
 fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
     let readme = fs::read_to_string("README.md")?;
     let directory = tempdir()?;
-    for command in ["run", "list", "show", "inbox", "jump"] {
+    for command in ["run", "list", "show", "inbox", "next", "clear", "jump"] {
         let output = hd(directory.path().join("events.db").as_path())
             .args([command, "--help"])
             .output()?;
@@ -28,6 +28,15 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
     for flag in ["--sound", "--notify"] {
         assert!(help.contains(flag), "help does not contain {flag}");
         assert!(readme.contains(flag), "README does not contain {flag}");
+    }
+    for phrase in [
+        "no unread events",
+        "cleared N read events",
+        "Clear read events",
+        "Press Ctrl-C twice within two seconds to exit",
+        "To quit, press Ctrl-C twice",
+    ] {
+        assert!(readme.contains(phrase), "README does not contain {phrase}");
     }
     Ok(())
 }

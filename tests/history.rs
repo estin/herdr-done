@@ -80,6 +80,70 @@ fn show_displays_event_fields() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn next_without_unread_events_reports_error() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("events.db");
+    let store = Store::open(&database)?;
+    let event = Event::new(OsStr::new("read"), &[], context()).completed(0, None);
+    store.upsert(&event)?;
+    store.set_read(&event.id, true)?;
+
+    let output = hd(&database).args(["next"]).output()?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stderr).contains("no unread events"));
+    Ok(())
+}
+
+#[test]
+fn clear_reports_zero_for_an_empty_store() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let output = hd(directory.path().join("events.db").as_path())
+        .args(["clear"])
+        .output()?;
+    assert!(output.status.success());
+    assert!(text(&output.stdout).contains("no read events were removed"));
+    Ok(())
+}
+
+#[test]
+fn clear_removes_only_read_events() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("events.db");
+    let store = Store::open(&database)?;
+    let read = Event::new(OsStr::new("read"), &[], context()).completed(0, None);
+    let unread = Event::new(OsStr::new("unread"), &[], context()).completed(0, None);
+    store.upsert(&read)?;
+    store.upsert(&unread)?;
+    store.set_read(&read.id, true)?;
+
+    let output = hd(&database).args(["clear"]).output()?;
+    assert!(output.status.success());
+    assert!(text(&output.stdout).contains("cleared 1 read events"));
+    assert!(store.get(&read.id)?.is_none());
+    assert!(store.get(&unread.id)?.is_some());
+    Ok(())
+}
+
+#[test]
+fn clear_removes_all_events_when_all_are_read() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("events.db");
+    let store = Store::open(&database)?;
+    let first = Event::new(OsStr::new("first"), &[], context()).completed(0, None);
+    let second = Event::new(OsStr::new("second"), &[], context()).completed(0, None);
+    store.upsert(&first)?;
+    store.upsert(&second)?;
+    store.set_read(&first.id, true)?;
+    store.set_read(&second.id, true)?;
+
+    let output = hd(&database).args(["clear"]).output()?;
+    assert!(output.status.success());
+    assert!(text(&output.stdout).contains("cleared 2 read events"));
+    assert_eq!(store.list(10, false)?.len(), 0);
+    Ok(())
+}
+
+#[test]
 fn show_unknown_event_fails() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempdir()?;
     let output = hd(directory.path().join("events.db").as_path())

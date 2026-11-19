@@ -72,7 +72,7 @@ The system MUST let users list recent events and inspect an event by identifier.
 - **THEN** the inbox does not present the ID as a human-readable name and shows the location as unavailable
 
 ### Requirement: Review events in an interactive inbox
-The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, and navigation to the next unread event. By default, the inbox MUST refresh its recent events while it remains open and MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump.
+The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, navigation to the next unread event, and clearing read events. By default, the inbox MUST refresh its recent events while it remains open and MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump. The inbox MUST exit only after two `Ctrl-C` key presses within two seconds. Pressing `q` or `Esc` MUST keep the inbox open and show the quit notice.
 
 #### Scenario: Open inbox with unread events
 - **WHEN** a user opens the inbox with unread events
@@ -91,6 +91,22 @@ The system MUST provide a keyboard-driven inbox that supports event selection, e
 - **WHEN** a user requests the next unread event
 - **THEN** the inbox selects the next unread event rather than the next event of any state
 
+#### Scenario: Clear read events from the inbox
+- **WHEN** a user invokes the clear-read action in the inbox
+- **THEN** the inbox removes all read events from the event store and refreshes the list without removing unread events
+
+#### Scenario: Quit with two Ctrl-C presses
+- **WHEN** a user presses `Ctrl-C` twice within two seconds from the list or detail view
+- **THEN** the inbox exits
+
+#### Scenario: First Ctrl-C shows quit notice
+- **WHEN** a user presses `Ctrl-C` once without a second press within two seconds
+- **THEN** the inbox stays open and shows "To quit, press Ctrl-C twice"
+
+#### Scenario: q and Esc do not quit
+- **WHEN** a user presses `q` or `Esc` from the list or detail view
+- **THEN** the inbox stays open and shows "To quit, press Ctrl-C twice"
+
 #### Scenario: Jump from the live inbox
 - **WHEN** a user selects the pane jump action in the live inbox
 - **THEN** the system focuses the source pane and keeps the inbox open
@@ -102,6 +118,28 @@ The system MUST provide a keyboard-driven inbox that supports event selection, e
 #### Scenario: Jump fails in the live inbox
 - **WHEN** a pane jump from the live inbox cannot complete
 - **THEN** the inbox stays open and displays the navigation error
+
+### Requirement: Navigate to the next unread completion
+The system MUST provide `hd next` to open the interactive inbox with the next unread completion selected.
+
+#### Scenario: An unread completion exists
+- **WHEN** a user runs `hd next` and unread events exist
+- **THEN** the inbox opens with an unread event selected and available for inspection
+
+#### Scenario: No unread completion exists
+- **WHEN** a user runs `hd next` and no unread events exist
+- **THEN** the system reports that there are no unread events and does not open an empty inbox
+
+### Requirement: Clear read completion events
+The system MUST provide `hd clear` to permanently remove read completion events while retaining unread events.
+
+#### Scenario: Read events exist
+- **WHEN** a user runs `hd clear` and read events exist
+- **THEN** the system removes all read events and reports the number removed
+
+#### Scenario: No read events exist
+- **WHEN** a user runs `hd clear` and no read events exist
+- **THEN** the system reports that no read events were removed and retains all unread events
 
 ### Requirement: Focus the source Herdr pane when supported
 The system MUST use documented Herdr interfaces for context detection and pane navigation. The jump action MUST focus the source pane without attaching to its terminal. The system MUST retain event history when the source pane is no longer available and MUST report when navigation cannot be completed.

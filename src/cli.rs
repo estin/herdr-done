@@ -59,6 +59,12 @@ pub enum Commands {
         oneshot: bool,
     },
 
+    /// Open the inbox with the newest unread event selected
+    Next,
+
+    /// Permanently remove read completion events
+    Clear,
+
     /// Focus the Herdr pane where a command started
     Jump {
         /// Event identifier
@@ -164,6 +170,24 @@ mod tests {
             _ => return Err("expected the inbox command".to_owned()),
         }
         Ok(())
+    }
+
+    #[test]
+    fn next_parses_without_arguments() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["hd", "next"]).map_err(|error| error.to_string())?;
+        match cli.command() {
+            Commands::Next => Ok(()),
+            _ => Err("expected the next command".to_owned()),
+        }
+    }
+
+    #[test]
+    fn clear_parses_without_arguments() -> Result<(), String> {
+        let cli = Cli::try_parse_from(["hd", "clear"]).map_err(|error| error.to_string())?;
+        match cli.command() {
+            Commands::Clear => Ok(()),
+            _ => Err("expected the clear command".to_owned()),
+        }
     }
 
     #[test]

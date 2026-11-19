@@ -33,9 +33,13 @@ The tool stores a completion event in SQLite. The default database path is `$XDG
 hd list
 hd list --unread
 hd show ID
+hd next
+hd clear
 ```
 
 `hd list` shows recent events in completion order, newest first. `hd list --unread` shows only unread events. `hd show ID` prints one event. `hd` reports an error when no event has the requested ID.
+
+`hd next` opens the inbox with the newest unread event selected. If no unread event exists, `hd next` reports `no unread events` and does not open the inbox. `hd clear` permanently removes read events and keeps unread events. It prints `cleared N read events` or `no read events were removed`.
 
 ## Interactive inbox
 
@@ -44,7 +48,7 @@ hd inbox
 hd inbox --oneshot
 ```
 
-The inbox opens without marking events as read. It refreshes the event list every second while it stays open. A pane jump keeps the inbox open and shows focus errors there. Use `hd inbox --oneshot` to close the inbox after a pane jump.
+The inbox opens without marking events as read. It refreshes the event list every second while it stays open. A pane jump keeps the inbox open and shows focus errors there. Press Ctrl-C twice within two seconds to exit. `q` and `Esc` keep the inbox open and show "To quit, press Ctrl-C twice". Use `hd inbox --oneshot` to close the inbox after a pane jump.
 
 | Key | Action |
 | --- | --- |
@@ -54,8 +58,10 @@ The inbox opens without marking events as read. It refreshes the event list ever
 | `n` | Select the next unread event |
 | `r` | Mark the selected event as read |
 | `u` | Mark the selected event as unread |
+| `c` | Clear read events |
 | `J` | Focus the source Herdr pane and keep the live inbox open |
-| `q` | Quit |
+| `Ctrl-C` twice | Quit the inbox |
+| `q` or `Esc` | Show the quit notice |
 
 Read and unread changes persist in the database.
 
@@ -76,5 +82,7 @@ Usage: hd run [OPTIONS] <COMMAND>...
 Usage: hd list [OPTIONS]
 Usage: hd show <ID>
 Usage: hd inbox [OPTIONS]
+Usage: hd next
+Usage: hd clear
 Usage: hd jump <ID>
 ```

@@ -28,7 +28,9 @@ fn dispatch(command: Commands) -> ExitCode {
         }
         Commands::List { unread, limit } => list(unread, limit),
         Commands::Show { id } => show(&id),
-        Commands::Inbox { oneshot } => open_inbox(oneshot),
+        Commands::Inbox { oneshot } => open_inbox(oneshot, false),
+        Commands::Next => next(),
+        Commands::Clear => clear(),
         Commands::Jump { id } => jump(&id),
     }
 }
@@ -93,7 +95,7 @@ fn show(id: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn open_inbox(oneshot: bool) -> ExitCode {
+fn open_inbox(oneshot: bool, start_unread: bool) -> ExitCode {
     let store = match Store::open_default() {
         Ok(store) => store,
         Err(error) => return fail(&error),
@@ -103,9 +105,43 @@ fn open_inbox(oneshot: bool) -> ExitCode {
     } else {
         inbox::Mode::Live
     };
-    match inbox::run(&store, mode) {
+    match inbox::run(&store, mode, start_unread) {
         Ok(Some(id)) => jump(&id),
         Ok(None) => ExitCode::SUCCESS,
+        Err(error) => fail(&error),
+    }
+}
+
+fn next() -> ExitCode {
+    let store = match Store::open_default() {
+        Ok(store) => store,
+        Err(error) => return fail(&error),
+    };
+    let unread = match store.list(1, true) {
+        Ok(unread) => unread,
+        Err(error) => return fail(&error),
+    };
+    if unread.is_empty() {
+        return fail("no unread events");
+    }
+    drop(store);
+    open_inbox(false, true)
+}
+
+fn clear() -> ExitCode {
+    let store = match Store::open_default() {
+        Ok(store) => store,
+        Err(error) => return fail(&error),
+    };
+    match store.clear_read() {
+        Ok(0) => {
+            println!("no read events were removed");
+            ExitCode::SUCCESS
+        }
+        Ok(count) => {
+            println!("cleared {count} read events");
+            ExitCode::SUCCESS
+        }
         Err(error) => fail(&error),
     }
 }

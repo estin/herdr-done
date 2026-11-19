@@ -184,6 +184,12 @@ impl Store {
         Ok(rows > 0)
     }
 
+    pub fn clear_read(&self) -> Result<usize, String> {
+        self.connection
+            .execute("DELETE FROM events WHERE read_at IS NOT NULL", [])
+            .map_err(storage_error)
+    }
+
     fn migrate(&mut self) -> Result<(), String> {
         let transaction = self
             .connection
@@ -426,6 +432,23 @@ mod tests {
         let saved = store.get(&event.id)?.ok_or("event missing".to_owned())?;
         assert_eq!(saved.herdr.tab_name.as_deref(), Some("backend"));
         assert_eq!(saved.herdr.pane_name.as_deref(), Some("build"));
+        Ok(())
+    }
+
+    #[test]
+    fn clear_read_keeps_unread_events() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let store = Store::open(directory.path().join("events.db"))?;
+        let read = Event::new(OsStr::new("read"), &[], HerdrContext::default()).completed(0, None);
+        let unread =
+            Event::new(OsStr::new("unread"), &[], HerdrContext::default()).completed(0, None);
+        store.upsert(&read)?;
+        store.upsert(&unread)?;
+        store.set_read(&read.id, true)?;
+
+        assert_eq!(store.clear_read()?, 1);
+        assert!(store.get(&read.id)?.is_none());
+        assert!(store.get(&unread.id)?.is_some());
         Ok(())
     }
 

@@ -313,6 +313,13 @@ fn apply_action(
 }
 
 fn render(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
+    if let Some(background) = theme.background {
+        let mut style = Style::default().bg(background);
+        if let Some(text) = theme.text {
+            style = style.fg(text);
+        }
+        frame.render_widget(Block::default().style(style), frame.area());
+    }
     let areas = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
@@ -462,6 +469,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
     use std::ffi::OsStr;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
@@ -814,6 +822,46 @@ mod tests {
             .map(|cell| cell.symbol().chars().next().unwrap_or(' '))
             .collect();
         assert!(content.contains(QUIT_NOTICE));
+        Ok(())
+    }
+
+    #[test]
+    fn scheme_background_fills_empty_cells() -> Result<(), String> {
+        let app = app();
+        let theme = Theme {
+            background: Some(Color::Rgb(1, 2, 3)),
+            text: Some(Color::Rgb(4, 5, 6)),
+            ..Theme::default()
+        };
+        let backend = TestBackend::new(80, 12);
+        let mut terminal =
+            Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
+        terminal
+            .draw(|frame| render(frame, &app, &theme))
+            .map_err(|error| format!("terminal error: {error}"))?;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(79, 0)].bg, Color::Rgb(1, 2, 3));
+        assert_eq!(buffer[(79, 0)].fg, Color::Rgb(4, 5, 6));
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| cell.bg == Color::Rgb(1, 2, 3))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn without_background_cells_keep_the_default() -> Result<(), String> {
+        let app = app();
+        let backend = TestBackend::new(80, 12);
+        let mut terminal =
+            Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
+        terminal
+            .draw(|frame| render(frame, &app, &Theme::default()))
+            .map_err(|error| format!("terminal error: {error}"))?;
+        let buffer = terminal.backend().buffer();
+        assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
         Ok(())
     }
 

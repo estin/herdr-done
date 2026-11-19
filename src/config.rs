@@ -1,5 +1,7 @@
+use bonfig::FromSource as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
+use std::collections::BTreeMap;
 
 #[bonfig::settings]
 #[derive(Debug, Clone, PartialEq)]
@@ -7,6 +9,7 @@ use ratatui::style::{Color, Modifier, Style};
 pub struct Settings {
     #[builder(default = "dark")]
     pub theme: String,
+    pub base16: Option<String>,
     pub colors: Colors,
     pub keys: Keys,
 }
@@ -15,6 +18,8 @@ pub struct Settings {
 #[derive(Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Colors {
+    pub background: Option<String>,
+    pub text: Option<String>,
     pub title: Option<String>,
     pub unread: Option<String>,
     pub secondary: Option<String>,
@@ -47,6 +52,12 @@ pub struct Keys {
     pub clear_read: Vec<String>,
 }
 
+#[bonfig::settings]
+#[derive(Debug, Clone, PartialEq)]
+struct Scheme {
+    palette: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
     pub theme: Theme,
@@ -55,6 +66,8 @@ pub struct Config {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
+    pub background: Option<Color>,
+    pub text: Option<Color>,
     pub title: Style,
     pub unread: Style,
     pub secondary: Style,
@@ -73,6 +86,8 @@ impl Default for Theme {
 impl Theme {
     fn dark() -> Self {
         Self {
+            background: None,
+            text: None,
             title: Style::default().add_modifier(Modifier::BOLD),
             unread: Style::default().fg(Color::Yellow),
             secondary: Style::default().fg(Color::Gray),
@@ -85,6 +100,8 @@ impl Theme {
 
     fn light() -> Self {
         Self {
+            background: None,
+            text: None,
             title: Style::default()
                 .fg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
@@ -167,11 +184,25 @@ fn config_error(error: &bonfig::Error) -> String {
 }
 
 fn resolve(settings: &Settings) -> Result<Config, String> {
-    let mut theme = match settings.theme.as_str() {
-        "dark" => Theme::dark(),
-        "light" => Theme::light(),
-        other => return Err(format!("theme: unknown theme {other:?}")),
+    let mut theme = if settings.base16.is_some() {
+        Theme::dark()
+    } else {
+        match settings.theme.as_str() {
+            "dark" => Theme::dark(),
+            "light" => Theme::light(),
+            other => return Err(format!("theme: unknown theme {other:?}")),
+        }
     };
+    if let Some(path) = settings.base16.as_deref() {
+        theme = apply_scheme(theme, path)?;
+    }
+    theme.background = override_optional_color(
+        theme.background,
+        settings.colors.background.as_deref(),
+        "colors.background",
+    )?;
+    theme.text =
+        override_optional_color(theme.text, settings.colors.text.as_deref(), "colors.text")?;
     theme.title = override_color(
         theme.title,
         settings.colors.title.as_deref(),
@@ -206,6 +237,55 @@ fn resolve(settings: &Settings) -> Result<Config, String> {
         theme,
         bindings: parse_bindings(&settings.keys)?,
     })
+}
+
+fn apply_scheme(mut theme: Theme, path: &str) -> Result<Theme, String> {
+    let path = expand_path(path)?;
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|error| format!("base16: cannot read {path:?}: {error}"))?;
+    let scheme = Scheme::from_yaml(&contents)
+        .map_err(|error| format!("base16: cannot parse {path:?}: {error}"))?;
+    theme.title = theme.title.fg(scheme_color(&scheme, "base0D")?);
+    theme.unread = theme.unread.fg(scheme_color(&scheme, "base0A")?);
+    theme.secondary = theme.secondary.fg(scheme_color(&scheme, "base04")?);
+    theme.background = Some(scheme_color(&scheme, "base00")?);
+    theme.text = Some(scheme_color(&scheme, "base05")?);
+    theme.success = theme.success.fg(scheme_color(&scheme, "base0B")?);
+    theme.failure = theme.failure.fg(scheme_color(&scheme, "base08")?);
+    theme.running = theme.running.fg(scheme_color(&scheme, "base0A")?);
+    Ok(theme)
+}
+
+fn scheme_color(scheme: &Scheme, key: &str) -> Result<Color, String> {
+    let value = scheme
+        .palette
+        .get(key)
+        .ok_or_else(|| format!("base16: palette.{key} missing"))?;
+    parse_color(value, &format!("base16: palette.{key}"))
+}
+
+fn expand_path(path: &str) -> Result<String, String> {
+    let Some(rest) = path.strip_prefix("~/") else {
+        return Ok(path.to_owned());
+    };
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| format!("base16: cannot expand {path:?}, HOME is unset"))?;
+    let home = home.to_string_lossy();
+    Ok(format!("{}/{}", home.trim_end_matches('/'), rest))
+}
+
+fn override_optional_color(
+    current: Option<Color>,
+    value: Option<&str>,
+    key: &str,
+) -> Result<Option<Color>, String> {
+    match value {
+        None => Ok(current),
+        Some(value) => match parse_color(value, key)? {
+            Color::Reset => Ok(None),
+            color => Ok(Some(color)),
+        },
+    }
 }
 
 fn override_color(style: Style, value: Option<&str>, key: &str) -> Result<Style, String> {
@@ -368,6 +448,10 @@ mod tests {
     };
     use bonfig::FromSource as _;
     use figment::Jail;
+    use serde_json::json;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
 
     fn char_key(ch: char) -> KeyEvent {
         plain(KeyCode::Char(ch))
@@ -377,6 +461,46 @@ mod tests {
         let _ = jail.create_dir("herdr-done")?;
         let _ = jail.create_file("herdr-done/config.toml", contents)?;
         Ok(())
+    }
+
+    const SPEC_011_SCHEME: &str = r##"system: "base16"
+name: "Test Scheme"
+author: "Test"
+variant: "dark"
+palette:
+  base00: "#000000"
+  base01: "#111111"
+  base02: "#222222"
+  base03: "#333333"
+  base04: "#444444"
+  base05: "#555555"
+  base06: "#666666"
+  base07: "#777777"
+  base08: "#888888"
+  base09: "#999999"
+  base0A: "#aaaaaa"
+  base0B: "#bbbbbb"
+  base0C: "#cccccc"
+  base0D: "#dddddd"
+  base0E: "#eeeeee"
+  base0F: "#ffffff"
+"##;
+
+    fn write_scheme(dir: &Path, name: &str, contents: &str) -> Result<String, String> {
+        let path = dir.join(name);
+        fs::write(&path, contents).map_err(|error| error.to_string())?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    fn settings_with_base16(path: &str) -> Result<Settings, String> {
+        Settings::from_serialize(json!({ "base16": path })).map_err(|error| config_error(&error))
+    }
+
+    fn resolve_error_owned(settings: &Settings) -> String {
+        match resolve(settings) {
+            Ok(_) => "expected a configuration error".to_owned(),
+            Err(error) => error,
+        }
     }
 
     fn resolve_error(contents: &str) -> String {
@@ -483,6 +607,116 @@ mod tests {
         let error = resolve_error("[keys]\ndown = [\"ctrl-c\"]");
         assert!(error.contains("keys.down"), "{error}");
         assert!(error.contains("ctrl-c"), "{error}");
+    }
+
+    #[test]
+    fn base16_scheme_maps_all_eight_colors() -> Result<(), String> {
+        let dir = tempdir().map_err(|error| error.to_string())?;
+        let path = write_scheme(dir.path(), "scheme.yaml", SPEC_011_SCHEME)?;
+        let settings = settings_with_base16(&path)?;
+        let config = resolve(&settings)?;
+        assert_eq!(config.theme.title.fg, Some(Color::Rgb(0xdd, 0xdd, 0xdd)));
+        assert_eq!(config.theme.unread.fg, Some(Color::Rgb(0xaa, 0xaa, 0xaa)));
+        assert_eq!(
+            config.theme.secondary.fg,
+            Some(Color::Rgb(0x44, 0x44, 0x44))
+        );
+        assert_eq!(config.theme.success.fg, Some(Color::Rgb(0xbb, 0xbb, 0xbb)));
+        assert_eq!(config.theme.failure.fg, Some(Color::Rgb(0x88, 0x88, 0x88)));
+        assert_eq!(config.theme.running.fg, Some(Color::Rgb(0xaa, 0xaa, 0xaa)));
+        assert_eq!(config.theme.background, Some(Color::Rgb(0x00, 0x00, 0x00)));
+        assert_eq!(config.theme.text, Some(Color::Rgb(0x55, 0x55, 0x55)));
+        Ok(())
+    }
+
+    #[test]
+    fn colors_override_the_scheme() -> Result<(), String> {
+        let dir = tempdir().map_err(|error| error.to_string())?;
+        let path = write_scheme(dir.path(), "scheme.yaml", SPEC_011_SCHEME)?;
+        let settings = Settings::from_serialize(json!({
+            "base16": path,
+            "colors": {
+                "title": "#123456",
+                "background": "#010203",
+                "text": "#fefefe",
+            },
+        }))
+        .map_err(|error| config_error(&error))?;
+        let config = resolve(&settings)?;
+        assert_eq!(config.theme.title.fg, Some(Color::Rgb(0x12, 0x34, 0x56)));
+        assert_eq!(config.theme.unread.fg, Some(Color::Rgb(0xaa, 0xaa, 0xaa)));
+        assert_eq!(
+            config.theme.secondary.fg,
+            Some(Color::Rgb(0x44, 0x44, 0x44))
+        );
+        assert_eq!(config.theme.background, Some(Color::Rgb(0x01, 0x02, 0x03)));
+        assert_eq!(config.theme.text, Some(Color::Rgb(0xfe, 0xfe, 0xfe)));
+        Ok(())
+    }
+
+    #[test]
+    fn background_reset_overrides_the_scheme() -> Result<(), String> {
+        let dir = tempdir().map_err(|error| error.to_string())?;
+        let path = write_scheme(dir.path(), "scheme.yaml", SPEC_011_SCHEME)?;
+        let settings = Settings::from_serialize(json!({
+            "base16": path,
+            "colors": { "background": "reset" },
+        }))
+        .map_err(|error| config_error(&error))?;
+        let config = resolve(&settings)?;
+        assert_eq!(config.theme.background, None);
+        assert_eq!(config.theme.text, Some(Color::Rgb(0x55, 0x55, 0x55)));
+        Ok(())
+    }
+
+    #[test]
+    fn base16_errors_name_the_file_or_palette_key() -> Result<(), String> {
+        let dir = tempdir().map_err(|error| error.to_string())?;
+        let missing = dir
+            .path()
+            .join("missing.yaml")
+            .to_string_lossy()
+            .into_owned();
+        let invalid = write_scheme(
+            dir.path(),
+            "invalid.yaml",
+            "palette: [not, a, map]
+",
+        )?;
+        let incomplete = write_scheme(
+            dir.path(),
+            "incomplete.yaml",
+            &SPEC_011_SCHEME.replace("  base0D: \"#dddddd\"\n", ""),
+        )?;
+        let bad_hex = write_scheme(
+            dir.path(),
+            "bad-hex.yaml",
+            &SPEC_011_SCHEME.replace("#dddddd", "nope"),
+        )?;
+        let cases = [
+            (missing.as_str(), "missing.yaml"),
+            (invalid.as_str(), "invalid.yaml"),
+            (incomplete.as_str(), "base0D"),
+            (bad_hex.as_str(), "base0D"),
+        ];
+        for (path, expected) in cases {
+            let settings = settings_with_base16(path)?;
+            let error = resolve_error_owned(&settings);
+            assert!(error.starts_with("base16:"), "{error}");
+            assert!(error.contains(expected), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn without_base16_resolution_is_unchanged() -> Result<(), String> {
+        let settings =
+            Settings::from_toml("theme = \"light\"").map_err(|error| config_error(&error))?;
+        let config = resolve(&settings)?;
+        assert_eq!(config.theme.title.fg, Some(Color::Blue));
+        assert_eq!(config.theme.unread.fg, Some(Color::Red));
+        assert_eq!(config.theme.secondary.fg, Some(Color::DarkGray));
+        Ok(())
     }
 
     #[test]

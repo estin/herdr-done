@@ -8,7 +8,7 @@ name = "hd"
 path = "src/main.rs"
 
 [dependencies]
-bonfig = "0.1"
+bonfig = { version = "0.1", features = ["yaml"] }
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
 clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29.0"

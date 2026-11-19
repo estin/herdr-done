@@ -107,8 +107,37 @@ clear_read = ["c"]
 
 The `theme` key accepts `dark` and `light`. `dark` is the default. Each `[colors]` key overrides one color from the selected theme. A color can be a name such as `gray` or `light-blue`, or a hex value such as `#RRGGBB`.
 
+Set `base16` to use a local tinted-theming scheme file instead of a built-in theme. Download a spec-0.11 file from the `base16` directory in the tinted-theming/schemes repository at `https://github.com/tinted-theming/schemes`. `hd` does not download scheme files.
+
+```toml
+base16 = "~/Downloads/tokyo-night-dark.yaml"
+
+[colors]
+title = "#ff0000"
+```
+
+A leading `~/` expands to `$HOME`. A relative path resolves from the current working directory. `hd` reads the file before it opens the inbox. A missing or invalid file stops the inbox and names the `base16` key.
+
+The scheme replaces the built-in theme colors, so `theme` does not change the result when `base16` is set. The palette maps to inbox colors as follows.
+
+| Inbox color | Palette key |
+| --- | --- |
+| Title | `base0D` |
+| Unread marker and running label | `base0A` |
+| Secondary text and detail labels | `base04` |
+| Success label | `base0B` |
+| Failure label | `base08` |
+| Background | `base00` |
+| Default text | `base05` |
+
+A scheme colors the whole inbox, including borders and empty space. Built-in themes leave background and text unset, so the terminal colors show through. Set `[colors] background` and `[colors] text` without a scheme to color the inbox on top of a built-in theme. Use `background = "reset"` to restore the terminal background. Use `text = "reset"` to restore the default text color.
+
+Each `[colors]` key still wins over a mapped scheme color. Other mapped colors stay unchanged.
+
 | Color key | Element |
 | --- | --- |
+| `background` | Inbox background |
+| `text` | Default text |
 | `title` | Inbox title |
 | `unread` | Unread marker |
 | `secondary` | Secondary text and detail labels |

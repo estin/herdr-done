@@ -46,6 +46,7 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
         "To quit, press Ctrl-C twice",
         "hd event MESSAGE",
         "Alerts are sent only after the event is saved",
+        "In event details, `q` and `Esc` return to the list",
     ] {
         assert!(readme.contains(phrase), "README does not contain {phrase}");
     }

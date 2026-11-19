@@ -102,7 +102,7 @@ The system MUST let users list recent events and inspect an event by identifier.
 - **THEN** the inbox does not present the ID as a human-readable name and shows the location as unavailable
 
 ### Requirement: Review events in an interactive inbox
-The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, navigation to the next unread event, and clearing read events. By default, the inbox MUST refresh its recent events while it remains open and MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump. The inbox MUST exit only after two `Ctrl-C` key presses within two seconds. Pressing `q` or `Esc` MUST keep the inbox open and show the quit notice.
+The system MUST provide a keyboard-driven inbox that supports event selection, event details, read and unread state, navigation to the next unread event, and clearing read events. By default, the inbox MUST refresh its recent events while it remains open and MUST stay open after a pane jump. The system MUST support a one-shot mode that preserves the current behavior of closing the inbox after a pane jump. The inbox MUST exit only after two `Ctrl-C` key presses within two seconds. Pressing `q` or `Esc` in the list view MUST keep the inbox open and show the quit notice. Pressing `q` or `Esc` in the detail view MUST return to the list view.
 
 #### Scenario: Open inbox with unread events
 - **WHEN** a user opens the inbox with unread events
@@ -134,8 +134,12 @@ The system MUST provide a keyboard-driven inbox that supports event selection, e
 - **THEN** the inbox stays open and shows "To quit, press Ctrl-C twice"
 
 #### Scenario: q and Esc do not quit
-- **WHEN** a user presses `q` or `Esc` from the list or detail view
+- **WHEN** a user presses `q` or `Esc` from the list view
 - **THEN** the inbox stays open and shows "To quit, press Ctrl-C twice"
+
+#### Scenario: q and Esc in detail view return to list
+- **WHEN** a user presses `q` or `Esc` from the detail view
+- **THEN** the inbox returns to the list view and stays open
 
 #### Scenario: Jump from the live inbox
 - **WHEN** a user selects the pane jump action in the live inbox

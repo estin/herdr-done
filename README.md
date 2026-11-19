@@ -59,7 +59,7 @@ hd inbox
 hd inbox --oneshot
 ```
 
-The inbox opens without marking events as read. It refreshes the event list every second while it stays open. A pane jump keeps the inbox open and shows focus errors there. Press Ctrl-C twice within two seconds to exit. `q` and `Esc` keep the inbox open and show "To quit, press Ctrl-C twice". Use `hd inbox --oneshot` to close the inbox after a pane jump.
+The inbox opens without marking events as read. It refreshes the event list every second while it stays open. A pane jump keeps the inbox open and shows focus errors there. Press Ctrl-C twice within two seconds to exit. In event details, `q` and `Esc` return to the list. In the list, they keep the inbox open and show "To quit, press Ctrl-C twice". Use `hd inbox --oneshot` to close the inbox after a pane jump.
 
 | Key | Action |
 | --- | --- |
@@ -72,7 +72,7 @@ The inbox opens without marking events as read. It refreshes the event list ever
 | `c` | Clear read events |
 | `J` | Focus the source Herdr pane and keep the live inbox open |
 | `Ctrl-C` twice | Quit the inbox |
-| `q` or `Esc` | Show the quit notice |
+| `q` or `Esc` | Return to the list from details, or show the quit notice in the list |
 
 Read and unread changes persist in the database.
 

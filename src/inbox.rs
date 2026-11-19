@@ -89,7 +89,11 @@ impl App {
             return self.register_ctrl_c(Instant::now());
         }
         match (self.view, key.code) {
-            (_, KeyCode::Char('q') | KeyCode::Esc) => {
+            (View::Detail, KeyCode::Char('q') | KeyCode::Esc) => {
+                self.view = View::List;
+                Action::None
+            }
+            (View::List, KeyCode::Char('q') | KeyCode::Esc) => {
                 self.set_message(QUIT_NOTICE.to_owned());
                 Action::None
             }
@@ -552,15 +556,23 @@ mod tests {
     }
 
     #[test]
-    fn q_and_esc_show_quit_notice_without_changing_view() {
-        for view in [View::List, View::Detail] {
-            for code in [KeyCode::Char('q'), KeyCode::Esc] {
-                let mut app = App::new(events());
-                app.view = view;
-                assert_eq!(app.handle_key(key(code)), Action::None);
-                assert_eq!(app.view, view);
-                assert_eq!(app.message.as_deref(), Some(QUIT_NOTICE));
-            }
+    fn q_and_esc_show_quit_notice_in_list_view() {
+        for code in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut app = App::new(events());
+            assert_eq!(app.handle_key(key(code)), Action::None);
+            assert_eq!(app.view, View::List);
+            assert_eq!(app.message.as_deref(), Some(QUIT_NOTICE));
+        }
+    }
+
+    #[test]
+    fn q_and_esc_return_to_list_from_detail_view() {
+        for code in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut app = App::new(events());
+            app.view = View::Detail;
+            assert_eq!(app.handle_key(key(code)), Action::None);
+            assert_eq!(app.view, View::List);
+            assert_eq!(app.message, None);
         }
     }
 

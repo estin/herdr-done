@@ -35,6 +35,20 @@ pub enum Commands {
         command: Vec<OsString>,
     },
 
+    /// Create a completed event from a message
+    Event {
+        /// Play Herdr's configured completion sound
+        #[arg(long)]
+        sound: bool,
+
+        /// Send a system notification
+        #[arg(long)]
+        notify: bool,
+
+        /// Event message
+        message: String,
+    },
+
     /// List recent completion events
     List {
         /// Show only unread events
@@ -146,6 +160,31 @@ mod tests {
                     assert_eq!(notify, args.contains(&"--notify"));
                 }
                 _ => return Err("expected the run command".to_owned()),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn event_parses_message_and_alert_flags() -> Result<(), String> {
+        let cases: [&[&str]; 3] = [
+            &["hd", "event", "deployment is ready"],
+            &["hd", "event", "--sound", "deployment is ready"],
+            &["hd", "event", "--notify", "deployment is ready"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args).map_err(|error| error.to_string())?;
+            match cli.command() {
+                Commands::Event {
+                    sound,
+                    notify,
+                    message,
+                } => {
+                    assert_eq!(message, "deployment is ready");
+                    assert_eq!(sound, args.contains(&"--sound"));
+                    assert_eq!(notify, args.contains(&"--notify"));
+                }
+                _ => return Err("expected the event command".to_owned()),
             }
         }
         Ok(())

@@ -27,6 +27,17 @@ The tool stores a completion event in SQLite. The default database path is `$XDG
 
 `hd` does not store command output or environment values. It stores command arguments, working directory, start time, finish time, duration, result, read state, and available Herdr identifiers.
 
+## Record an event
+
+```sh
+hd event "deployment is ready"
+hd event --sound --notify "deployment is ready"
+```
+
+`hd event MESSAGE` stores a completed event from a message without starting a process. The message appears in event lists and details. The event includes the current working directory, timestamps, duration, and available Herdr context. `--sound` and `--notify` use the same alert behavior as `hd run`. They are off by default. Alerts are sent only after the event is saved.
+
+A missing message is invalid usage. A storage failure returns a failure status and sends no alerts.
+
 ## Review events
 
 ```sh
@@ -79,6 +90,7 @@ hd jump ID
 
 ```text
 Usage: hd run [OPTIONS] <COMMAND>...
+Usage: hd event [OPTIONS] <MESSAGE>
 Usage: hd list [OPTIONS]
 Usage: hd show <ID>
 Usage: hd inbox [OPTIONS]

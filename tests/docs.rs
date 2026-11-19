@@ -8,7 +8,9 @@ use tempfile::tempdir;
 fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
     let readme = fs::read_to_string("README.md")?;
     let directory = tempdir()?;
-    for command in ["run", "list", "show", "inbox", "next", "clear", "jump"] {
+    for command in [
+        "run", "event", "list", "show", "inbox", "next", "clear", "jump",
+    ] {
         let output = hd(directory.path().join("events.db").as_path())
             .args([command, "--help"])
             .output()?;
@@ -20,13 +22,20 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or_else(|| format!("no usage line for {command}"))?;
         assert!(readme.contains(usage), "README does not contain {usage}");
     }
-    let output = hd(directory.path().join("events.db").as_path())
-        .args(["run", "--help"])
-        .output()?;
-    assert!(output.status.success());
-    let help = text(&output.stdout);
+    for command in ["run", "event"] {
+        let output = hd(directory.path().join("events.db").as_path())
+            .args([command, "--help"])
+            .output()?;
+        assert!(output.status.success());
+        let help = text(&output.stdout);
+        for flag in ["--sound", "--notify"] {
+            assert!(
+                help.contains(flag),
+                "{command} help does not contain {flag}"
+            );
+        }
+    }
     for flag in ["--sound", "--notify"] {
-        assert!(help.contains(flag), "help does not contain {flag}");
         assert!(readme.contains(flag), "README does not contain {flag}");
     }
     for phrase in [
@@ -35,6 +44,8 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
         "Clear read events",
         "Press Ctrl-C twice within two seconds to exit",
         "To quit, press Ctrl-C twice",
+        "hd event MESSAGE",
+        "Alerts are sent only after the event is saved",
     ] {
         assert!(readme.contains(phrase), "README does not contain {phrase}");
     }

@@ -1,10 +1,12 @@
 use clap::Parser;
+use herdr_done::alerts;
 use herdr_done::cli::{Cli, Commands};
+use herdr_done::event::Event;
 use herdr_done::herdr;
 use herdr_done::inbox;
 use herdr_done::runner;
 use herdr_done::store::Store;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -26,6 +28,11 @@ fn dispatch(command: Commands) -> ExitCode {
             let args: Vec<OsString> = parts.collect();
             runner::run(&program, &args, sound, notify)
         }
+        Commands::Event {
+            sound,
+            notify,
+            message,
+        } => create_event(&message, sound, notify),
         Commands::List { unread, limit } => list(unread, limit),
         Commands::Show { id } => show(&id),
         Commands::Inbox { oneshot } => open_inbox(oneshot, false),
@@ -33,6 +40,20 @@ fn dispatch(command: Commands) -> ExitCode {
         Commands::Clear => clear(),
         Commands::Jump { id } => jump(&id),
     }
+}
+
+fn create_event(message: &str, sound: bool, notify: bool) -> ExitCode {
+    let store = match Store::open_default() {
+        Ok(store) => store,
+        Err(error) => return fail(&error),
+    };
+    let event = Event::new(OsStr::new(message), &[], herdr::current_context()).completed(0, None);
+    if let Err(error) = store.upsert(&event) {
+        return fail(&error);
+    }
+    alerts::deliver(sound, notify, &event);
+    println!("created event {}", event.id);
+    ExitCode::SUCCESS
 }
 
 fn list(unread: bool, limit: usize) -> ExitCode {

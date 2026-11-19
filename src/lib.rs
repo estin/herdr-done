@@ -2,6 +2,7 @@
 
 pub mod alerts;
 pub mod cli;
+pub mod config;
 pub mod event;
 pub mod herdr;
 pub mod inbox;

@@ -1,4 +1,5 @@
-use crate::event::{Event, now_millis};
+use crate::config::{Bindings, Config, Theme};
+use crate::event::{Event, EventStatus, now_millis};
 use crate::herdr;
 use crate::store::Store;
 use crossterm::event::{self, Event as TerminalEvent, KeyCode, KeyEvent, KeyModifiers};
@@ -8,7 +9,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Wrap,
@@ -53,16 +54,18 @@ pub struct App {
     events: Vec<Event>,
     selected: usize,
     view: View,
+    bindings: Bindings,
     message: Option<String>,
     last_ctrl_c: Option<Instant>,
 }
 
 impl App {
-    pub fn new(events: Vec<Event>) -> Self {
+    pub fn new(events: Vec<Event>, bindings: Bindings) -> Self {
         Self {
             events,
             selected: 0,
             view: View::List,
+            bindings,
             message: None,
             last_ctrl_c: None,
         }
@@ -88,43 +91,53 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.register_ctrl_c(Instant::now());
         }
-        match (self.view, key.code) {
-            (View::Detail, KeyCode::Char('q') | KeyCode::Esc) => {
-                self.view = View::List;
-                Action::None
-            }
-            (View::List, KeyCode::Char('q') | KeyCode::Esc) => {
-                self.set_message(QUIT_NOTICE.to_owned());
-                Action::None
-            }
-            (_, KeyCode::Down | KeyCode::Char('j')) => {
-                self.move_selection(1);
-                Action::None
-            }
-            (_, KeyCode::Up | KeyCode::Char('k')) => {
-                self.move_selection(-1);
-                Action::None
-            }
-            (View::List, KeyCode::Enter) => {
-                self.view = View::Detail;
-                Action::None
-            }
-            (_, KeyCode::Char('n')) => {
-                self.select_next_unread();
-                Action::None
-            }
-            (_, KeyCode::Char('r')) => self
-                .selected_event()
-                .map_or(Action::None, |event| Action::Read(event.id.clone(), true)),
-            (_, KeyCode::Char('u')) => self
-                .selected_event()
-                .map_or(Action::None, |event| Action::Read(event.id.clone(), false)),
-            (_, KeyCode::Char('J')) => self
-                .selected_event()
-                .map_or(Action::None, |event| Action::Jump(event.id.clone())),
-            (_, KeyCode::Char('c')) => Action::Clear,
-            _ => Action::None,
+        if self.bindings.back.contains(&key) {
+            return match self.view {
+                View::Detail => {
+                    self.view = View::List;
+                    Action::None
+                }
+                View::List => {
+                    self.set_message(QUIT_NOTICE.to_owned());
+                    Action::None
+                }
+            };
         }
+        if self.view == View::List && self.bindings.inspect.contains(&key) {
+            self.view = View::Detail;
+            return Action::None;
+        }
+        if self.bindings.down.contains(&key) {
+            self.move_selection(1);
+            return Action::None;
+        }
+        if self.bindings.up.contains(&key) {
+            self.move_selection(-1);
+            return Action::None;
+        }
+        if self.bindings.next_unread.contains(&key) {
+            self.select_next_unread();
+            return Action::None;
+        }
+        if self.bindings.mark_read.contains(&key) {
+            return self
+                .selected_event()
+                .map_or(Action::None, |event| Action::Read(event.id.clone(), true));
+        }
+        if self.bindings.mark_unread.contains(&key) {
+            return self
+                .selected_event()
+                .map_or(Action::None, |event| Action::Read(event.id.clone(), false));
+        }
+        if self.bindings.jump.contains(&key) {
+            return self
+                .selected_event()
+                .map_or(Action::None, |event| Action::Jump(event.id.clone()));
+        }
+        if self.bindings.clear_read.contains(&key) {
+            return Action::Clear;
+        }
+        Action::None
     }
 
     pub fn register_ctrl_c(&mut self, now: Instant) -> Action {
@@ -191,17 +204,27 @@ impl App {
     }
 }
 
-pub fn run(store: &Store, mode: Mode, start_unread: bool) -> Result<Option<String>, String> {
+pub fn run(
+    store: &Store,
+    mode: Mode,
+    start_unread: bool,
+    config: &Config,
+) -> Result<Option<String>, String> {
     let events = store.list(100, false)?;
-    let mut app = App::new(events);
+    let mut app = App::new(events, config.bindings.clone());
     if start_unread {
         app.select_first_unread();
     }
-    let outcome = run_terminal(&mut app, store, mode)?;
+    let outcome = run_terminal(&mut app, store, mode, &config.theme)?;
     Ok(outcome)
 }
 
-fn run_terminal(app: &mut App, store: &Store, mode: Mode) -> Result<Option<String>, String> {
+fn run_terminal(
+    app: &mut App,
+    store: &Store,
+    mode: Mode,
+    theme: &Theme,
+) -> Result<Option<String>, String> {
     enable_raw_mode().map_err(|error| format!("terminal error: {error}"))?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -212,7 +235,7 @@ fn run_terminal(app: &mut App, store: &Store, mode: Mode) -> Result<Option<Strin
     let mut terminal =
         Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
 
-    let result = event_loop(&mut terminal, app, store, mode);
+    let result = event_loop(&mut terminal, app, store, mode, theme);
     let _ = disable_raw_mode();
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     let _ = terminal.show_cursor();
@@ -224,11 +247,12 @@ fn event_loop(
     app: &mut App,
     store: &Store,
     mode: Mode,
+    theme: &Theme,
 ) -> Result<Option<String>, String> {
     let mut last_refresh = Instant::now();
     loop {
         terminal
-            .draw(|frame| render(frame, app))
+            .draw(|frame| render(frame, app, theme))
             .map_err(|error| format!("terminal error: {error}"))?;
         if event::poll(Duration::from_millis(200))
             .map_err(|error| format!("input error: {error}"))?
@@ -288,7 +312,7 @@ fn apply_action(
     Outcome::Continue
 }
 
-fn render(frame: &mut Frame<'_>, app: &App) {
+fn render(frame: &mut Frame<'_>, app: &App, theme: &Theme) {
     let areas = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(1),
@@ -304,39 +328,42 @@ fn render(frame: &mut Frame<'_>, app: &App) {
             ""
         }
     );
-    frame.render_widget(
-        Paragraph::new(title).style(Style::default().add_modifier(Modifier::BOLD)),
-        areas[0],
-    );
+    frame.render_widget(Paragraph::new(title).style(theme.title), areas[0]);
 
     match app.view {
-        View::List => render_list(frame, app, areas[1]),
-        View::Detail => render_detail(frame, app, areas[1]),
+        View::List => render_list(frame, app, areas[1], theme),
+        View::Detail => render_detail(frame, app, areas[1], theme),
     }
 
-    let footer = app.message.clone().unwrap_or_else(|| {
-        "j/k navigate - Enter inspect - n next unread - r read - u unread - c clear read - J jump - Ctrl-C twice quit"
-            .to_owned()
-    });
+    let footer = app.message.clone().unwrap_or_else(|| app.bindings.help());
     frame.render_widget(Paragraph::new(footer), areas[2]);
 }
 
-fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
+fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect, theme: &Theme) {
     let items: Vec<ListItem> = app
         .events
         .iter()
         .map(|event| {
-            let marker = if event.read_at.is_none() { "*" } else { " " };
-            let first = format!(
-                "{marker} {:<44} {:<16} {}",
-                event.command_line(),
-                event.result_label(),
-                event.duration_label()
-            );
+            let unread = event.read_at.is_none();
+            let marker = if unread { "*" } else { " " };
+            let marker_style = if unread {
+                theme.unread
+            } else {
+                Style::default()
+            };
+            let first = Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::raw(format!(" {:<44} ", event.command_line())),
+                Span::styled(
+                    format!("{:<16} ", event.result_label()),
+                    result_style(theme, event),
+                ),
+                Span::raw(event.duration_label()),
+            ]);
             let second = format!("    {}", event.location_label());
             ListItem::new(vec![
-                Line::from(first),
-                Line::from(Span::styled(second, Style::default().fg(Color::Gray))),
+                first,
+                Line::from(Span::styled(second, theme.secondary)),
             ])
         })
         .collect();
@@ -344,26 +371,48 @@ fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     state.select(Some(app.selected));
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("Events"))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(theme.selection);
     StatefulWidget::render(list, area, frame.buffer_mut(), &mut state);
 }
 
-fn render_detail(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
+fn render_detail(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect, theme: &Theme) {
     let lines: Vec<Line> = match app.selected_event() {
         Some(event) => vec![
-            detail_line("Command", event.command_line()),
-            detail_line("Working directory", event.cwd.clone()),
-            detail_line("Result", event.result_label()),
-            detail_line("Started", event.started_label()),
-            detail_line("Finished", event.finished_label()),
-            detail_line("Duration", event.duration_label()),
-            detail_line("Host", event.hostname.clone()),
-            detail_line("Read", if event.read_at.is_none() { "no" } else { "yes" }),
+            detail_line("Command", event.command_line(), Style::default(), theme),
+            detail_line(
+                "Working directory",
+                event.cwd.clone(),
+                Style::default(),
+                theme,
+            ),
+            detail_line(
+                "Result",
+                event.result_label(),
+                result_style(theme, event),
+                theme,
+            ),
+            detail_line("Started", event.started_label(), Style::default(), theme),
+            detail_line("Finished", event.finished_label(), Style::default(), theme),
+            detail_line("Duration", event.duration_label(), Style::default(), theme),
+            detail_line("Host", event.hostname.clone(), Style::default(), theme),
+            detail_line(
+                "Read",
+                if event.read_at.is_none() { "no" } else { "yes" },
+                Style::default(),
+                theme,
+            ),
             detail_line(
                 "Herdr session",
                 event.herdr.session_id.as_deref().unwrap_or("-"),
+                Style::default(),
+                theme,
             ),
-            detail_line("Herdr location", event.location_label()),
+            detail_line(
+                "Herdr location",
+                event.location_label(),
+                Style::default(),
+                theme,
+            ),
         ],
         None => vec![Line::from("No events")],
     };
@@ -377,14 +426,29 @@ fn render_detail(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
     frame.render_widget(paragraph, area);
 }
 
-fn detail_line(label: &'static str, value: impl Into<String>) -> Line<'static> {
+fn detail_line(
+    label: &'static str,
+    value: impl Into<String>,
+    value_style: Style,
+    theme: &Theme,
+) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             format!("{label}: "),
-            Style::default().add_modifier(Modifier::BOLD),
+            theme.secondary.add_modifier(Modifier::BOLD),
         ),
-        Span::raw(value.into()),
+        Span::styled(value.into(), value_style),
     ])
+}
+
+fn result_style(theme: &Theme, event: &Event) -> Style {
+    match event.status {
+        EventStatus::Running => theme.running,
+        EventStatus::Completed if event.exit_code.unwrap_or(0) == 0 => theme.success,
+        EventStatus::Completed | EventStatus::FailedToStart | EventStatus::Interrupted => {
+            theme.failure
+        }
+    }
 }
 
 #[cfg(test)]
@@ -392,6 +456,7 @@ mod tests {
     use super::{
         Action, App, Mode, Outcome, QUIT_INTERVAL, QUIT_NOTICE, View, apply_action, render,
     };
+    use crate::config::{Bindings, Theme};
     use crate::event::{Event, HerdrContext, now_millis};
     use crate::store::Store;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -403,6 +468,14 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn char_key(ch: char) -> KeyEvent {
+        key(KeyCode::Char(ch))
+    }
+
+    fn app() -> App {
+        App::new(events(), Bindings::default())
     }
 
     fn named_event(name: &str) -> Event {
@@ -429,7 +502,7 @@ mod tests {
 
     #[test]
     fn navigation_moves_selection() {
-        let mut app = App::new(events());
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Down)), Action::None);
         assert_eq!(app.selected_index(), 1);
         assert_eq!(app.handle_key(key(KeyCode::Char('k'))), Action::None);
@@ -440,7 +513,7 @@ mod tests {
 
     #[test]
     fn refresh_keeps_the_selected_event_by_id() {
-        let mut app = App::new(events());
+        let mut app = app();
         app.selected = 1;
         let selected = app.events[1].clone();
         app.refresh(vec![named_event("newest"), selected.clone()]);
@@ -453,7 +526,7 @@ mod tests {
 
     #[test]
     fn refresh_selects_newest_when_selection_disappears() {
-        let mut app = App::new(events());
+        let mut app = app();
         app.selected = 1;
         app.refresh(vec![named_event("newest")]);
         assert_eq!(app.selected_index(), 0);
@@ -467,7 +540,7 @@ mod tests {
     fn live_jump_stays_open_after_success() -> Result<(), String> {
         let directory = tempdir().map_err(|error| error.to_string())?;
         let store = Store::open(directory.path().join("events.db"))?;
-        let mut app = App::new(events());
+        let mut app = app();
         let id = app
             .selected_event()
             .map(|event| event.id.clone())
@@ -486,7 +559,7 @@ mod tests {
     fn live_jump_shows_focus_errors() -> Result<(), String> {
         let directory = tempdir().map_err(|error| error.to_string())?;
         let store = Store::open(directory.path().join("events.db"))?;
-        let mut app = App::new(events());
+        let mut app = app();
         let id = app
             .selected_event()
             .map(|event| event.id.clone())
@@ -505,7 +578,7 @@ mod tests {
     fn oneshot_jump_closes_the_inbox() -> Result<(), String> {
         let directory = tempdir().map_err(|error| error.to_string())?;
         let store = Store::open(directory.path().join("events.db"))?;
-        let mut app = App::new(events());
+        let mut app = app();
         let id = app
             .selected_event()
             .map(|event| event.id.clone())
@@ -525,7 +598,7 @@ mod tests {
 
     #[test]
     fn double_ctrl_c_exits_within_the_interval() {
-        let mut app = App::new(events());
+        let mut app = app();
         let first = Instant::now();
         assert_eq!(app.register_ctrl_c(first), Action::None);
         assert_eq!(
@@ -536,7 +609,7 @@ mod tests {
 
     #[test]
     fn expired_first_ctrl_c_resets_the_timer() {
-        let mut app = App::new(events());
+        let mut app = app();
         let first = Instant::now();
         assert_eq!(app.register_ctrl_c(first), Action::None);
         let expired = first + QUIT_INTERVAL + Duration::from_millis(1);
@@ -549,7 +622,7 @@ mod tests {
 
     #[test]
     fn ctrl_c_key_event_is_recognized() {
-        let mut app = App::new(events());
+        let mut app = app();
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(app.handle_key(ctrl_c), Action::None);
         assert_eq!(app.message.as_deref(), Some(QUIT_NOTICE));
@@ -558,7 +631,7 @@ mod tests {
     #[test]
     fn q_and_esc_show_quit_notice_in_list_view() {
         for code in [KeyCode::Char('q'), KeyCode::Esc] {
-            let mut app = App::new(events());
+            let mut app = app();
             assert_eq!(app.handle_key(key(code)), Action::None);
             assert_eq!(app.view, View::List);
             assert_eq!(app.message.as_deref(), Some(QUIT_NOTICE));
@@ -568,7 +641,7 @@ mod tests {
     #[test]
     fn q_and_esc_return_to_list_from_detail_view() {
         for code in [KeyCode::Char('q'), KeyCode::Esc] {
-            let mut app = App::new(events());
+            let mut app = app();
             app.view = View::Detail;
             assert_eq!(app.handle_key(key(code)), Action::None);
             assert_eq!(app.view, View::List);
@@ -578,7 +651,7 @@ mod tests {
 
     #[test]
     fn clear_key_returns_clear_action() {
-        let mut app = App::new(events());
+        let mut app = app();
         assert_eq!(app.handle_key(key(KeyCode::Char('c'))), Action::Clear);
     }
 
@@ -594,7 +667,7 @@ mod tests {
         }
         store.set_read(&read_id, true)?;
 
-        let mut app = App::new(store.list(100, false)?);
+        let mut app = App::new(store.list(100, false)?, Bindings::default());
         app.selected = app
             .events
             .iter()
@@ -617,13 +690,13 @@ mod tests {
 
     #[test]
     fn opening_inbox_does_not_mark_events_read() {
-        let app = App::new(events());
+        let app = app();
         assert_eq!(app.unread_count(), 3);
     }
 
     #[test]
     fn read_action_targets_selected_event() {
-        let mut app = App::new(events());
+        let mut app = app();
         let id = app
             .selected_event()
             .map(|event| event.id.clone())
@@ -640,7 +713,7 @@ mod tests {
     fn first_unread_selection_does_not_mark_event_read() {
         let mut events = events();
         events[0].read_at = Some(now_millis());
-        let mut app = App::new(events.clone());
+        let mut app = App::new(events.clone(), Bindings::default());
         app.select_first_unread();
         assert_eq!(
             app.selected_event().map(|event| event.id.as_str()),
@@ -654,7 +727,7 @@ mod tests {
 
     #[test]
     fn next_unread_skips_read_events() {
-        let mut app = App::new(events());
+        let mut app = app();
         let read_id = app.events[1].id.clone();
         app.apply_read(&read_id, true);
         let _ = app.handle_key(key(KeyCode::Char('n')));
@@ -663,13 +736,53 @@ mod tests {
     }
 
     #[test]
-    fn footer_shows_clear_shortcut() -> Result<(), String> {
-        let app = App::new(events());
+    fn custom_binding_runs_action_and_replaces_default() {
+        let bindings = Bindings {
+            mark_read: vec![char_key('x')],
+            ..Bindings::default()
+        };
+        let mut app = App::new(events(), bindings);
+        let id = app
+            .selected_event()
+            .map(|event| event.id.clone())
+            .unwrap_or_default();
+        assert_eq!(app.handle_key(char_key('x')), Action::Read(id, true));
+        assert_eq!(app.handle_key(char_key('r')), Action::None);
+    }
+
+    #[test]
+    fn footer_reflects_active_bindings() -> Result<(), String> {
+        let bindings = Bindings {
+            clear_read: vec![char_key('x')],
+            ..Bindings::default()
+        };
+        let app = App::new(events(), bindings);
         let backend = TestBackend::new(120, 12);
         let mut terminal =
             Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &app, &Theme::default()))
+            .map_err(|error| format!("terminal error: {error}"))?;
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(content.contains("x clear read"), "{content}");
+        assert!(!content.contains("c clear read"), "{content}");
+        Ok(())
+    }
+
+    #[test]
+    fn footer_shows_clear_shortcut() -> Result<(), String> {
+        let app = app();
+        let backend = TestBackend::new(120, 12);
+        let mut terminal =
+            Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
+        terminal
+            .draw(|frame| render(frame, &app, &Theme::default()))
             .map_err(|error| format!("terminal error: {error}"))?;
         let content: String = terminal
             .backend()
@@ -679,19 +792,19 @@ mod tests {
             .map(|cell| cell.symbol().chars().next().unwrap_or(' '))
             .collect();
         assert!(content.contains("c clear read"));
-        assert!(content.contains("Ctrl-C twice quit"));
+        assert!(content.contains("Ctrl-C twice"));
         Ok(())
     }
 
     #[test]
     fn first_ctrl_c_renders_quit_notice() -> Result<(), String> {
-        let mut app = App::new(events());
+        let mut app = app();
         app.register_ctrl_c(Instant::now());
         let backend = TestBackend::new(120, 12);
         let mut terminal =
             Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &app, &Theme::default()))
             .map_err(|error| format!("terminal error: {error}"))?;
         let content: String = terminal
             .backend()
@@ -706,13 +819,13 @@ mod tests {
 
     #[test]
     fn detail_view_shows_event_fields() -> Result<(), String> {
-        let mut app = App::new(events());
+        let mut app = app();
         app.view = View::Detail;
         let backend = TestBackend::new(100, 20);
         let mut terminal =
             Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
         terminal
-            .draw(|frame| render(frame, &app))
+            .draw(|frame| render(frame, &app, &Theme::default()))
             .map_err(|error| format!("terminal error: {error}"))?;
         let content: String = terminal
             .backend()

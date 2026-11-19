@@ -76,6 +76,55 @@ The inbox opens without marking events as read. It refreshes the event list ever
 
 Read and unread changes persist in the database.
 
+## Inbox configuration
+
+`hd inbox` and `hd next` read one optional configuration file. The path is `$XDG_CONFIG_HOME/herdr-done/config.toml`. When `XDG_CONFIG_HOME` is unset, `hd` uses `$HOME/.config/herdr-done/config.toml`. A missing file is not an error.
+
+Configuration loads in three layers. Built-in defaults load first. The file loads next. Environment variables load last. Each layer replaces only the keys that it sets. `hd` reports an invalid value before it opens the terminal and names the key that failed.
+
+```toml
+theme = "light"
+
+[colors]
+title = "#005faf"
+unread = "yellow"
+secondary = "gray"
+success = "green"
+failure = "red"
+running = "yellow"
+
+[keys]
+down = ["down", "j"]
+up = ["up", "k"]
+inspect = ["enter"]
+back = ["q", "esc"]
+next_unread = ["n"]
+mark_read = ["r"]
+mark_unread = ["u"]
+jump = ["J"]
+clear_read = ["c"]
+```
+
+The `theme` key accepts `dark` and `light`. `dark` is the default. Each `[colors]` key overrides one color from the selected theme. A color can be a name such as `gray` or `light-blue`, or a hex value such as `#RRGGBB`.
+
+| Color key | Element |
+| --- | --- |
+| `title` | Inbox title |
+| `unread` | Unread marker |
+| `secondary` | Secondary text and detail labels |
+| `success` | Successful result label |
+| `failure` | Failed result label |
+| `running` | Running result label |
+
+Each `[keys]` key accepts a list of key names. Use single characters such as `j` or `J`, or a name such as `enter`, `esc`, `up`, `down`, `left`, `right`, `tab`, `space`, `home`, `end`, `pageup`, `pagedown`, `backspace`, `delete`, `f1` through `f12`, or `ctrl-<char>`. Character names keep their case, so `J` means uppercase J. Double `Ctrl-C` always quits and no configuration key can remap it. If two actions share one key, the first action in this order wins: down, up, inspect, back, next unread, mark read, mark unread, jump, clear read.
+
+Environment variables use the `HD__` prefix and `__` between nested keys. Values use TOML syntax, so quote strings and use brackets for lists.
+
+```sh
+export HD__THEME='"light"'
+export HD__KEYS__NEXT_UNREAD='["N"]'
+```
+
 ## Herdr integration
 
 When Herdr context is available, `hd run` stores the session, workspace, tab, and pane identifiers. When Herdr is unavailable, the command still runs and the event has no Herdr identifiers.

@@ -1,6 +1,7 @@
 use clap::Parser;
 use herdr_done::alerts;
 use herdr_done::cli::{Cli, Commands};
+use herdr_done::config;
 use herdr_done::event::Event;
 use herdr_done::herdr;
 use herdr_done::inbox;
@@ -117,6 +118,10 @@ fn show(id: &str) -> ExitCode {
 }
 
 fn open_inbox(oneshot: bool, start_unread: bool) -> ExitCode {
+    let config = match config::load() {
+        Ok(config) => config,
+        Err(error) => return fail(&error),
+    };
     let store = match Store::open_default() {
         Ok(store) => store,
         Err(error) => return fail(&error),
@@ -126,7 +131,7 @@ fn open_inbox(oneshot: bool, start_unread: bool) -> ExitCode {
     } else {
         inbox::Mode::Live
     };
-    match inbox::run(&store, mode, start_unread) {
+    match inbox::run(&store, mode, start_unread, &config) {
         Ok(Some(id)) => jump(&id),
         Ok(None) => ExitCode::SUCCESS,
         Err(error) => fail(&error),

@@ -1,4 +1,4 @@
-use crate::event::{Event, EventStatus, HerdrContext, now_millis};
+use crate::event::{Event, EventKind, EventStatus, HerdrContext, now_millis};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use std::env;
 use std::fmt;
@@ -10,7 +10,7 @@ use std::time::Duration;
 const COLUMNS: &str = "id, program, args_json, cwd, started_at, finished_at, duration_ms, \
                        status, exit_code, signal, failure_reason, read_at, session_id, \
                        workspace_id, workspace_name, tab_id, pane_id, terminal_id, hostname, \
-                       tab_name, pane_name";
+                       tab_name, pane_name, kind";
 
 const MIGRATION_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -50,6 +50,10 @@ CREATE INDEX idx_events_pane ON events(session_id, pane_id);
 const MIGRATION_V2: &str = "
 ALTER TABLE events ADD COLUMN tab_name TEXT;
 ALTER TABLE events ADD COLUMN pane_name TEXT;
+";
+
+const MIGRATION_V3: &str = "
+ALTER TABLE events ADD COLUMN kind TEXT NOT NULL DEFAULT 'run';
 ";
 
 pub struct Store {
@@ -111,9 +115,9 @@ impl Store {
                     id, program, args_json, cwd, started_at, finished_at, duration_ms,
                     status, exit_code, signal, failure_reason, read_at,
                     session_id, workspace_id, workspace_name, tab_id, pane_id, terminal_id,
-                    hostname, tab_name, pane_name
+                    hostname, tab_name, pane_name, kind
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     &event.id,
                     &event.program,
@@ -136,6 +140,7 @@ impl Store {
                     &event.hostname,
                     &event.herdr.tab_name,
                     &event.herdr.pane_name,
+                    event.kind.as_str(),
                 ],
             )
             .map_err(storage_error)?;
@@ -241,6 +246,22 @@ impl Store {
                 )
                 .map_err(storage_error)?;
         }
+        let version: Option<i64> = transaction
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .map_err(storage_error)?;
+        if version.unwrap_or(0) < 3 {
+            transaction
+                .execute_batch(MIGRATION_V3)
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (3, ?1)",
+                    params![now_millis()],
+                )
+                .map_err(storage_error)?;
+        }
         transaction.commit().map_err(storage_error)
     }
 }
@@ -263,11 +284,20 @@ fn row_to_event(row: &Row<'_>) -> Result<Event, rusqlite::Error> {
         rusqlite::Error::FromSqlConversionFailure(
             7,
             rusqlite::types::Type::Text,
-            Box::new(InvalidStatus(message)),
+            Box::new(InvalidValue(message)),
+        )
+    })?;
+    let kind_text: String = row.get(21)?;
+    let kind = EventKind::parse(&kind_text).map_err(|message| {
+        rusqlite::Error::FromSqlConversionFailure(
+            21,
+            rusqlite::types::Type::Text,
+            Box::new(InvalidValue(message)),
         )
     })?;
     Ok(Event {
         id: row.get(0)?,
+        kind,
         program: row.get(1)?,
         args,
         cwd: row.get(3)?,
@@ -294,15 +324,15 @@ fn row_to_event(row: &Row<'_>) -> Result<Event, rusqlite::Error> {
 }
 
 #[derive(Debug)]
-struct InvalidStatus(String);
+struct InvalidValue(String);
 
-impl fmt::Display for InvalidStatus {
+impl fmt::Display for InvalidValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl std::error::Error for InvalidStatus {}
+impl std::error::Error for InvalidValue {}
 
 fn is_busy(error: &str) -> bool {
     let message = error.to_ascii_lowercase();
@@ -426,6 +456,37 @@ mod tests {
         assert_eq!(event.herdr.tab_name, None);
         assert_eq!(event.herdr.pane_name, None);
         assert_eq!(event.herdr.pane_id.as_deref(), Some("w1:p1"));
+        assert!(!event.is_manual_event());
+        Ok(())
+    }
+
+    #[test]
+    fn saves_event_kind_with_events() -> Result<(), String> {
+        let directory = tempdir().map_err(|error| error.to_string())?;
+        let store = Store::open(directory.path().join("events.db"))?;
+        let manual = Event::new(
+            OsStr::new("deployment is ready"),
+            &[],
+            HerdrContext::default(),
+        )
+        .completed(0, None)
+        .manual();
+        let run = Event::new(OsStr::new("date"), &[], HerdrContext::default()).completed(0, None);
+        store.upsert(&manual)?;
+        store.upsert(&run)?;
+
+        assert!(
+            store
+                .get(&manual.id)?
+                .ok_or_else(|| "manual event missing".to_owned())?
+                .is_manual_event()
+        );
+        assert!(
+            !store
+                .get(&run.id)?
+                .ok_or_else(|| "run event missing".to_owned())?
+                .is_manual_event()
+        );
         Ok(())
     }
 

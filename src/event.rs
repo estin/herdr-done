@@ -40,6 +40,30 @@ impl EventStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EventKind {
+    #[default]
+    Run,
+    Event,
+}
+
+impl EventKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Event => "event",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "run" => Ok(Self::Run),
+            "event" => Ok(Self::Event),
+            other => Err(format!("unknown event kind: {other}")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HerdrContext {
     pub session_id: Option<String>,
@@ -68,6 +92,7 @@ impl HerdrContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Event {
     pub id: String,
+    pub kind: EventKind,
     pub program: String,
     pub args: Vec<String>,
     pub cwd: String,
@@ -88,6 +113,7 @@ impl Event {
         let started_at = now_millis();
         Self {
             id: Ulid::generate().to_string(),
+            kind: EventKind::Run,
             program: program.to_string_lossy().into_owned(),
             args: args
                 .iter()
@@ -108,6 +134,11 @@ impl Event {
             herdr,
             hostname: hostname(),
         }
+    }
+
+    pub fn manual(mut self) -> Self {
+        self.kind = EventKind::Event;
+        self
     }
 
     pub fn completed(self, exit_code: i32, signal: Option<i32>) -> Self {
@@ -137,6 +168,10 @@ impl Event {
         self.signal = signal;
         self.failure_reason = failure_reason;
         self
+    }
+
+    pub fn is_manual_event(&self) -> bool {
+        self.kind == EventKind::Event
     }
 
     pub fn command_line(&self) -> String {
@@ -177,6 +212,13 @@ impl Event {
 
     pub fn started_label(&self) -> String {
         format_timestamp(self.started_at)
+    }
+
+    pub fn started_time_label(&self) -> String {
+        DateTime::from_timestamp_millis(self.started_at).map_or_else(
+            || self.started_at.to_string(),
+            |value| value.with_timezone(&Local).format("%H:%M:%S").to_string(),
+        )
     }
 
     pub fn finished_label(&self) -> String {
@@ -229,7 +271,7 @@ fn hostname() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Event, EventStatus, HerdrContext};
+    use super::{Event, EventKind, EventStatus, HerdrContext};
     use std::ffi::{OsStr, OsString};
 
     fn event() -> Event {
@@ -238,6 +280,12 @@ mod tests {
             &[OsString::from("build"), OsString::from("--release")],
             HerdrContext::default(),
         )
+    }
+
+    #[test]
+    fn manual_events_use_the_event_kind() {
+        assert!(!event().is_manual_event());
+        assert!(event().manual().is_manual_event());
     }
 
     #[test]
@@ -306,6 +354,13 @@ mod tests {
             },
         );
         assert_eq!(event.location_label(), "worker / build");
+    }
+
+    #[test]
+    fn kind_values_round_trip() {
+        for kind in [EventKind::Run, EventKind::Event] {
+            assert_eq!(EventKind::parse(kind.as_str()), Ok(kind));
+        }
     }
 
     #[test]

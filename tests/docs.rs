@@ -35,9 +35,17 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    for flag in ["--sound", "--notify"] {
+    for flag in ["--sound", "--notify", "--print-id"] {
         assert!(readme.contains(flag), "README does not contain {flag}");
     }
+    let output = hd(directory.path().join("events.db").as_path())
+        .args(["event", "--help"])
+        .output()?;
+    assert!(output.status.success());
+    assert!(
+        text(&output.stdout).contains("--print-id"),
+        "event help does not contain --print-id"
+    );
     for phrase in [
         "no unread events",
         "cleared N read events",
@@ -45,6 +53,11 @@ fn readme_usage_matches_cli_help() -> Result<(), Box<dyn std::error::Error>> {
         "Press Ctrl-C twice within two seconds to exit",
         "To quit, press Ctrl-C twice",
         "hd event MESSAGE",
+        "hd event --print-id MESSAGE",
+        "writes no output on success",
+        "Each inbox row shows the invocation time",
+        "but no finish time or duration",
+        "A command run shows `Command`, `Started`, `Finished`, and `Duration`",
         "Alerts are sent only after the event is saved",
         "In event details, `q` and `Esc` return to the list",
     ] {

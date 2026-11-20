@@ -31,10 +31,11 @@ The tool stores a completion event in SQLite. The default database path is `$XDG
 
 ```sh
 hd event "deployment is ready"
+hd event --print-id "deployment is ready"
 hd event --sound --notify "deployment is ready"
 ```
 
-`hd event MESSAGE` stores a completed event from a message without starting a process. The message appears in event lists and details. The event includes the current working directory, timestamps, duration, and available Herdr context. `--sound` and `--notify` use the same alert behavior as `hd run`. They are off by default. Alerts are sent only after the event is saved.
+`hd event MESSAGE` stores a completed event from a message without starting a process. It writes no output on success. Use `hd event --print-id MESSAGE` to print `created event ID` after the event is saved. The message appears in event lists and details. The event includes the current working directory, timestamps, duration, and available Herdr context. `--sound` and `--notify` use the same alert behavior as `hd run`. They are off by default. Alerts are sent only after the event is saved.
 
 A missing message is invalid usage. A storage failure returns a failure status and sends no alerts.
 
@@ -60,6 +61,8 @@ hd inbox --oneshot
 ```
 
 The inbox opens without marking events as read. A live inbox watches the event store and refreshes when a new event is written. It also refreshes at the configured interval as a fallback. A pane jump keeps the inbox open and shows focus errors there. Press Ctrl-C twice within two seconds to exit. In event details, `q` and `Esc` return to the list. In the list, they keep the inbox open and show "To quit, press Ctrl-C twice". Use `hd inbox --oneshot` to close the inbox after a pane jump.
+
+Each inbox row shows the invocation time for both `hd event` and `hd run`. In details, a manual event shows `Message` and `Invocation` but no finish time or duration. A command run shows `Command`, `Started`, `Finished`, and `Duration`. The stored event keeps all timing values.
 
 | Key | Action |
 | --- | --- |

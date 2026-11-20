@@ -421,6 +421,7 @@ fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect, th
                     format!("{:<16} ", event.result_label()),
                     result_style(theme, event),
                 ),
+                Span::raw(format!("Started: {} ", event.started_time_label())),
                 Span::raw(event.duration_label()),
             ]);
             let second = format!("    {}", event.location_label());
@@ -440,43 +441,69 @@ fn render_list(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect, th
 
 fn render_detail(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect, theme: &Theme) {
     let lines: Vec<Line> = match app.selected_event() {
-        Some(event) => vec![
-            detail_line("Command", event.command_line(), Style::default(), theme),
-            detail_line(
-                "Working directory",
-                event.cwd.clone(),
-                Style::default(),
-                theme,
-            ),
-            detail_line(
-                "Result",
-                event.result_label(),
-                result_style(theme, event),
-                theme,
-            ),
-            detail_line("Started", event.started_label(), Style::default(), theme),
-            detail_line("Finished", event.finished_label(), Style::default(), theme),
-            detail_line("Duration", event.duration_label(), Style::default(), theme),
-            detail_line("Host", event.hostname.clone(), Style::default(), theme),
-            detail_line(
-                "Read",
-                if event.read_at.is_none() { "no" } else { "yes" },
-                Style::default(),
-                theme,
-            ),
-            detail_line(
-                "Herdr session",
-                event.herdr.session_id.as_deref().unwrap_or("-"),
-                Style::default(),
-                theme,
-            ),
-            detail_line(
-                "Herdr location",
-                event.location_label(),
-                Style::default(),
-                theme,
-            ),
-        ],
+        Some(event) => {
+            let mut lines = vec![
+                detail_line(
+                    if event.is_manual_event() {
+                        "Message"
+                    } else {
+                        "Command"
+                    },
+                    event.command_line(),
+                    Style::default(),
+                    theme,
+                ),
+                detail_line(
+                    "Working directory",
+                    event.cwd.clone(),
+                    Style::default(),
+                    theme,
+                ),
+                detail_line(
+                    "Result",
+                    event.result_label(),
+                    result_style(theme, event),
+                    theme,
+                ),
+            ];
+            let timing = if event.is_manual_event() {
+                vec![detail_line(
+                    "Invocation",
+                    event.started_label(),
+                    Style::default(),
+                    theme,
+                )]
+            } else {
+                vec![
+                    detail_line("Started", event.started_label(), Style::default(), theme),
+                    detail_line("Finished", event.finished_label(), Style::default(), theme),
+                    detail_line("Duration", event.duration_label(), Style::default(), theme),
+                ]
+            };
+            lines.extend(timing);
+            lines.extend([
+                detail_line("Host", event.hostname.clone(), Style::default(), theme),
+                detail_line(
+                    "Read",
+                    if event.read_at.is_none() { "no" } else { "yes" },
+                    Style::default(),
+                    theme,
+                ),
+                detail_line(
+                    "Herdr session",
+                    event.herdr.session_id.as_deref().unwrap_or("-"),
+                    Style::default(),
+                    theme,
+                ),
+                detail_line(
+                    "Herdr location",
+                    event.location_label(),
+                    Style::default(),
+                    theme,
+                ),
+            ]);
+            lines
+        }
         None => vec![Line::from("No events")],
     };
     let paragraph = Paragraph::new(lines)
@@ -528,7 +555,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
     use std::sync::mpsc::{self, Receiver};
     use std::time::{Duration, Instant};
@@ -567,6 +594,37 @@ mod tests {
             },
         )
         .completed(0, None)
+        .manual()
+    }
+
+    fn timed_event(name: &str, args: &[&str], started_at: i64, manual: bool) -> Event {
+        let args = args.iter().map(OsString::from).collect::<Vec<_>>();
+        let event = Event::new(OsStr::new(name), &args, HerdrContext::default()).completed(0, None);
+        let mut event = if manual { event.manual() } else { event };
+        event.started_at = started_at;
+        event.finished_at = Some(started_at);
+        event.duration_ms = Some(0);
+        event
+    }
+
+    fn rendered(app: &App) -> Result<String, String> {
+        rendered_with_width(app, 160)
+    }
+
+    fn rendered_with_width(app: &App, width: u16) -> Result<String, String> {
+        let backend = TestBackend::new(width, 30);
+        let mut terminal =
+            Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
+        terminal
+            .draw(|frame| render(frame, app, &Theme::default()))
+            .map_err(|error| format!("terminal error: {error}"))?;
+        Ok(terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol().chars().next().unwrap_or(' '))
+            .collect())
     }
 
     fn events() -> Vec<Event> {
@@ -880,6 +938,25 @@ mod tests {
     }
 
     #[test]
+    fn list_rows_show_invocation_time_for_events_and_runs() -> Result<(), String> {
+        let manual = timed_event("manual", &[], 1_700_000_000_000, true);
+        let run = timed_event("cargo", &["build"], 1_700_000_060_000, false);
+        let app = App::new(vec![manual.clone(), run.clone()], Bindings::default());
+        let content = rendered_with_width(&app, 100)?;
+        assert!(
+            content.contains(&format!("Started: {}", manual.started_time_label())),
+            "{content}"
+        );
+        assert!(
+            content.contains(&format!("Started: {}", run.started_time_label())),
+            "{content}"
+        );
+        assert!(!content.contains(&manual.started_label()), "{content}");
+        assert!(content.contains("0s"), "{content}");
+        Ok(())
+    }
+
+    #[test]
     fn footer_reflects_active_bindings() -> Result<(), String> {
         let bindings = Bindings {
             clear_read: vec![char_key('x')],
@@ -990,24 +1067,43 @@ mod tests {
     fn detail_view_shows_event_fields() -> Result<(), String> {
         let mut app = app();
         app.view = View::Detail;
-        let backend = TestBackend::new(100, 20);
-        let mut terminal =
-            Terminal::new(backend).map_err(|error| format!("terminal error: {error}"))?;
-        terminal
-            .draw(|frame| render(frame, &app, &Theme::default()))
-            .map_err(|error| format!("terminal error: {error}"))?;
-        let content: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol().chars().next().unwrap_or(' '))
-            .collect();
-        assert!(content.contains("Command:"));
+        let content = rendered(&app)?;
+        assert!(content.contains("Message:"));
         assert!(content.contains("first"));
         assert!(content.contains("Result:"));
         assert!(content.contains("worker / backend / build"));
         assert!(!content.contains("w1:p1"));
+        assert!(!content.contains("Finished:"));
+        assert!(!content.contains("Duration:"));
+        Ok(())
+    }
+
+    #[test]
+    fn manual_detail_omits_finish_and_duration() -> Result<(), String> {
+        let event = timed_event("deployment is ready", &[], 1_700_000_000_000, true);
+        let mut app = App::new(vec![event.clone()], Bindings::default());
+        app.view = View::Detail;
+        let content = rendered(&app)?;
+        assert!(content.contains("Message:"));
+        assert!(content.contains("deployment is ready"));
+        assert!(content.contains(&format!("Invocation: {}", event.started_label())));
+        assert!(!content.contains("Finished:"));
+        assert!(!content.contains("Duration:"));
+        Ok(())
+    }
+
+    #[test]
+    fn run_detail_keeps_all_timing_fields() -> Result<(), String> {
+        let event = timed_event("date", &[], 1_700_000_060_000, false);
+        let mut app = App::new(vec![event.clone()], Bindings::default());
+        app.view = View::Detail;
+        let content = rendered(&app)?;
+        assert!(content.contains("Command:"));
+        assert!(content.contains("date"));
+        assert!(content.contains(&format!("Started: {}", event.started_label())));
+        assert!(content.contains(&format!("Finished: {}", event.finished_label())));
+        assert!(content.contains(&format!("Duration: {}", event.duration_label())));
+        assert!(!content.contains("Message:"));
         Ok(())
     }
 }

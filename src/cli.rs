@@ -45,6 +45,10 @@ pub enum Commands {
         #[arg(long)]
         notify: bool,
 
+        /// Print the created event ID
+        #[arg(long)]
+        print_id: bool,
+
         /// Event message
         message: String,
     },
@@ -166,11 +170,12 @@ mod tests {
     }
 
     #[test]
-    fn event_parses_message_and_alert_flags() -> Result<(), String> {
-        let cases: [&[&str]; 3] = [
+    fn event_parses_message_and_flags() -> Result<(), String> {
+        let cases: [&[&str]; 4] = [
             &["hd", "event", "deployment is ready"],
             &["hd", "event", "--sound", "deployment is ready"],
             &["hd", "event", "--notify", "deployment is ready"],
+            &["hd", "event", "--print-id", "deployment is ready"],
         ];
         for args in cases {
             let cli = Cli::try_parse_from(args).map_err(|error| error.to_string())?;
@@ -178,11 +183,13 @@ mod tests {
                 Commands::Event {
                     sound,
                     notify,
+                    print_id,
                     message,
                 } => {
                     assert_eq!(message, "deployment is ready");
                     assert_eq!(sound, args.contains(&"--sound"));
                     assert_eq!(notify, args.contains(&"--notify"));
+                    assert_eq!(print_id, args.contains(&"--print-id"));
                 }
                 _ => return Err("expected the event command".to_owned()),
             }

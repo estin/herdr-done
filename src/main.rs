@@ -37,8 +37,9 @@ fn dispatch(command: Commands, config: &config::Config) -> ExitCode {
         Commands::Event {
             sound,
             notify,
+            print_id,
             message,
-        } => create_event(&message, sound, notify, &config.database),
+        } => create_event(&message, sound, notify, print_id, &config.database),
         Commands::List { unread, limit } => list(unread, limit, &config.database),
         Commands::Show { id } => show(&id, &config.database),
         Commands::Inbox { oneshot } => open_inbox(oneshot, false, config),
@@ -48,17 +49,27 @@ fn dispatch(command: Commands, config: &config::Config) -> ExitCode {
     }
 }
 
-fn create_event(message: &str, sound: bool, notify: bool, database: &Path) -> ExitCode {
+fn create_event(
+    message: &str,
+    sound: bool,
+    notify: bool,
+    print_id: bool,
+    database: &Path,
+) -> ExitCode {
     let store = match Store::open(database) {
         Ok(store) => store,
         Err(error) => return fail(&error),
     };
-    let event = Event::new(OsStr::new(message), &[], herdr::current_context()).completed(0, None);
+    let event = Event::new(OsStr::new(message), &[], herdr::current_context())
+        .completed(0, None)
+        .manual();
     if let Err(error) = store.upsert(&event) {
         return fail(&error);
     }
     alerts::deliver(sound, notify, &event);
-    println!("created event {}", event.id);
+    if print_id {
+        println!("created event {}", event.id);
+    }
     ExitCode::SUCCESS
 }
 

@@ -21,7 +21,7 @@ fn creates_completed_event_from_message() -> Result<(), Box<dyn std::error::Erro
         .args(["event", "deployment is ready"])
         .output()?;
     assert!(output.status.success());
-    assert!(text(&output.stdout).contains("created event"));
+    assert_eq!(text(&output.stdout), "");
 
     let store = Store::open(&database)?;
     let events = store.list(10, false)?;
@@ -36,6 +36,52 @@ fn creates_completed_event_from_message() -> Result<(), Box<dyn std::error::Erro
     assert_ne!(event.cwd, "");
     assert_eq!(event.herdr.session_id.as_deref(), Some("job"));
     assert_eq!(event.herdr.pane_id.as_deref(), Some("w9:p3"));
+    Ok(())
+}
+
+#[test]
+fn prints_created_id_when_requested() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("events.db");
+    let output = hd(&database)
+        .args(["event", "--print-id", "deployment is ready"])
+        .output()?;
+    assert!(output.status.success());
+
+    let store = Store::open(&database)?;
+    let events = store.list(10, false)?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        text(&output.stdout),
+        format!("created event {}\n", events[0].id)
+    );
+    Ok(())
+}
+
+#[test]
+fn distinguishes_manual_events_from_command_runs() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempdir()?;
+    let database = directory.path().join("events.db");
+    assert!(hd(&database).args(["event", "manual"]).status()?.success());
+    assert!(
+        hd(&database)
+            .args(["run", "--", "date"])
+            .status()?
+            .success()
+    );
+
+    let events = Store::open(&database)?.list(10, false)?;
+    assert_eq!(events.len(), 2);
+    assert!(
+        events
+            .iter()
+            .any(|event| event.program == "manual" && event.is_manual_event())
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.program == "date" && !event.is_manual_event())
+    );
     Ok(())
 }
 
@@ -153,9 +199,10 @@ fn storage_failure_suppresses_alerts_and_returns_failure() -> Result<(), Box<dyn
         .env("HERDR_ENV", "1")
         .env("HERDR_BIN_PATH", &fake_herdr)
         .env("ALERT_LOG", &log)
-        .args(["event", "--sound", "deployment is ready"])
+        .args(["event", "--sound", "--print-id", "deployment is ready"])
         .output()?;
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, Vec::<u8>::new());
     assert!(text(&output.stderr).contains("storage error"));
     assert!(!log.exists());
     Ok(())
